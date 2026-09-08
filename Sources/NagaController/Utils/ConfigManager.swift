@@ -28,17 +28,26 @@ struct ButtonAction: Codable {
     let text: String? // for textSnippet
     let steps: [MacroStep]? // for macro
     let profile: String? // for profileSwitch
+    var mouseAction: MouseAction? = nil
 }
 
 final class ConfigManager {
     static let shared = ConfigManager()
+    static let didChangeNotification = Notification.Name("NagaConfigDidChange")
+    private(set) var lastError: String?
+    private var storageURL: URL?
+    private var defaults = UserDefaults.standard
 
     private(set) var profiles: [String: Profile] = [:]
     private(set) var currentProfileName: String = "Default"
 
-    private init() {}
+    init(storageURL: URL? = nil, defaults: UserDefaults = .standard) {
+        self.storageURL = storageURL
+        self.defaults = defaults
+    }
 
     func load() {
+        lastError = nil
         // Load bundled defaults first
         var mergedProfiles: [String: Profile] = [:]
         var mergedSettings: Settings? = nil
@@ -61,11 +70,11 @@ final class ConfigManager {
                 let userData = try Data(contentsOf: userURL)
                 let upf = try JSONDecoder().decode(ProfilesFile.self, from: userData)
                 // Overlay: replace/merge profiles
-                for (name, profile) in upf.profiles { mergedProfiles[name] = profile }
+                mergedProfiles = upf.profiles
                 // Overlay settings
                 if let s = upf.settings { mergedSettings = s }
             } catch {
-                NSLog("[Config] Failed to load user profiles: \(error.localizedDescription)")
+                lastError = "Impossibile caricare i profili: \(error.localizedDescription)"
             }
         }
 
@@ -73,7 +82,7 @@ final class ConfigManager {
         self.profiles = mergedProfiles
 
         // Preferred profile: UserDefaults > settings.currentProfile > "Default"
-        let ud = UserDefaults.standard
+        let ud = defaults
         if let saved = ud.string(forKey: kCurrentProfileKey) {
             currentProfileName = saved
         } else if let bundled = mergedSettings?.currentProfile {
@@ -82,28 +91,29 @@ final class ConfigManager {
             currentProfileName = "Default"
         }
 
-        // Apply mapping to ButtonMapper
-        let mapping = mappingForCurrentProfile()
-        if mapping.isEmpty {
-            applyFallbackMapping()
-        } else {
-            ButtonMapper.shared.updateMapping(mapping)
+        if profiles[currentProfileName] == nil {
+            currentProfileName = profiles.keys.sorted().first ?? "Default"
         }
+        ButtonMapper.shared.updateMapping(mappingForCurrentProfile())
+        notify()
     }
 
     func setCurrentProfile(_ name: String) {
         guard profiles[name] != nil else { return }
         currentProfileName = name
-        UserDefaults.standard.set(name, forKey: kCurrentProfileKey)
+        defaults.set(name, forKey: kCurrentProfileKey)
         ButtonMapper.shared.updateMapping(mappingForCurrentProfile())
+        saveUserProfiles()
     }
 
     func getRemappingEnabled() -> Bool {
-        return UserDefaults.standard.bool(forKey: kRemappingEnabledKey)
+        return defaults.bool(forKey: kRemappingEnabledKey)
     }
 
     func setRemappingEnabled(_ enabled: Bool) {
-        UserDefaults.standard.set(enabled, forKey: kRemappingEnabledKey)
+        defaults.set(enabled, forKey: kRemappingEnabledKey)
+        if !enabled { EventTapManager.shared.resetInputState() }
+        notify()
     }
 
     func availableProfiles() -> [String] {
@@ -114,7 +124,7 @@ final class ConfigManager {
         guard let profile = profiles[currentProfileName] else { return [:] }
         var result: [Int: ActionType] = [:]
         for (key, action) in profile.buttons {
-            if let idx = Int(key), let mapped = convert(action: action) {
+            if let idx = Int(key), (1...19).contains(idx), let mapped = convert(action: action) {
                 result[idx] = mapped
             }
         }
@@ -138,6 +148,7 @@ final class ConfigManager {
 
     @discardableResult
     func duplicateProfile(source: String, as newName: String) -> Bool {
+        guard profiles[source] != nil else { return false }
         return createProfile(name: newName, basedOn: source)
     }
 
@@ -147,8 +158,17 @@ final class ConfigManager {
         guard oldName != newTrim, !newTrim.isEmpty, let existing = profiles[oldName], profiles[newTrim] == nil else { return false }
         profiles.removeValue(forKey: oldName)
         profiles[newTrim] = existing
+        for name in Array(profiles.keys) {
+            guard var profile = profiles[name] else { continue }
+            for (button, action) in profile.buttons where action.type == "profileSwitch" && action.profile == oldName {
+                profile.buttons[button] = toButtonAction(.profileSwitch(profile: newTrim, description: action.description))
+            }
+            profiles[name] = profile
+        }
         if currentProfileName == oldName { currentProfileName = newTrim }
-        UserDefaults.standard.set(currentProfileName, forKey: kCurrentProfileKey)
+        defaults.set(currentProfileName, forKey: kCurrentProfileKey)
+        ButtonMapper.shared.updateMapping(mappingForCurrentProfile())
+        saveUserProfiles()
         return true
     }
 
@@ -167,6 +187,7 @@ final class ConfigManager {
             // refresh mapping for current profile
             ButtonMapper.shared.updateMapping(mappingForCurrentProfile())
         }
+        saveUserProfiles()
         return true
     }
 
@@ -183,8 +204,10 @@ final class ConfigManager {
         if let cp = pf.settings?.currentProfile, profiles[cp] != nil {
             setCurrentProfile(cp)
         } else {
+            if profiles[currentProfileName] == nil { currentProfileName = profiles.keys.sorted().first ?? "Default" }
             ButtonMapper.shared.updateMapping(mappingForCurrentProfile())
         }
+        saveUserProfiles()
     }
 
     func exportCurrentProfile(to url: URL) throws {
@@ -206,6 +229,9 @@ final class ConfigManager {
 
     private func convert(action: ButtonAction) -> ActionType? {
         switch action.type {
+        case "disabled": return .disabled
+        case "mouse":
+            return action.mouseAction.map { .mouse(action: $0, description: action.description) }
         case "keySequence":
             return .keySequence(keys: action.keys ?? [], description: action.description)
         case "application":
@@ -229,6 +255,10 @@ final class ConfigManager {
 
     private func toButtonAction(_ action: ActionType) -> ButtonAction {
         switch action {
+        case .disabled:
+            return ButtonAction(type: "disabled", keys: nil, description: nil, path: nil, command: nil, text: nil, steps: nil, profile: nil)
+        case .mouse(let mouse, let description):
+            return ButtonAction(type: "mouse", keys: nil, description: description, path: nil, command: nil, text: nil, steps: nil, profile: nil, mouseAction: mouse)
         case .keySequence(let keys, let description):
             return ButtonAction(type: "keySequence", keys: keys, description: description, path: nil, command: nil, text: nil, steps: nil, profile: nil)
         case .application(let path, let description):
@@ -246,6 +276,7 @@ final class ConfigManager {
 
     // Update a single button's action in the current profile and refresh mapping
     func setAction(forButton index: Int, action: ActionType?) {
+        guard (1...19).contains(index) else { return }
         var profile = profiles[currentProfileName] ?? Profile(buttons: [:])
         let key = String(index)
         if let action = action {
@@ -255,10 +286,12 @@ final class ConfigManager {
         }
         profiles[currentProfileName] = profile
         ButtonMapper.shared.updateMapping(mappingForCurrentProfile())
+        saveUserProfiles()
     }
 
     // Persist current profiles to Application Support
     func saveUserProfiles() {
+        defaults.set(currentProfileName, forKey: kCurrentProfileKey)
         do {
             let url = try userProfilesURL()
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -267,23 +300,21 @@ final class ConfigManager {
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(pf)
             try data.write(to: url, options: .atomic)
-            NSLog("[Config] Saved profiles to: \(url.path)")
+            lastError = nil
         } catch {
-            NSLog("[Config] Failed to save profiles: \(error.localizedDescription)")
+            lastError = "Impossibile salvare i profili: \(error.localizedDescription)"
         }
+        notify()
+    }
+
+    private func notify() {
+        DispatchQueue.main.async { NotificationCenter.default.post(name: Self.didChangeNotification, object: self) }
     }
 
     private func userProfilesURL() throws -> URL {
+        if let storageURL { return storageURL }
         let appSupport = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
         return appSupport.appendingPathComponent("NagaController/profiles.json")
     }
 
-    private func applyFallbackMapping() {
-        // Minimal fallback: Copy/Paste for 1 and 2
-        let mapping: [Int: ActionType] = [
-            1: .keySequence(keys: [KeyStroke(key: "c", modifiers: ["cmd"])], description: "Copy"),
-            2: .keySequence(keys: [KeyStroke(key: "v", modifiers: ["cmd"])], description: "Paste")
-        ]
-        ButtonMapper.shared.updateMapping(mapping)
-    }
 }

@@ -8,8 +8,10 @@ final class EventTapManager {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
-    // Track buttons whose original number keyDown we intercepted so we can also intercept keyUp
+    static let didUpdateNotification = Notification.Name("NagaEventTapDidUpdate")
+    private(set) var isRunning = false
     private var activeDownButtons: Set<Int> = []
+    private var repeatOwnership = InputRepeatOwnership()
 
     private(set) var isListeningOnly: Bool = true
     var isRemappingEnabled: Bool {
@@ -28,10 +30,8 @@ final class EventTapManager {
         stop()
         isListeningOnly = listenOnly
 
-        let mask = (
-            (1 << CGEventType.keyDown.rawValue) |
-            (1 << CGEventType.keyUp.rawValue)
-        )
+        let types: [CGEventType] = [.keyDown, .keyUp, .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp, .scrollWheel, .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
 
         var options: CGEventTapOptions = listenOnly ? .listenOnly : .defaultTap
 
@@ -55,9 +55,11 @@ final class EventTapManager {
                 userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
             )
             isListeningOnly = true
-            DispatchQueue.main.async { [weak self] in self?.promptForInputMonitoring() }
+
         }
         guard let tap = tap else {
+            isListeningOnly = true
+            notify()
             NSLog("[EventTap] Failed to create event tap. Check permissions.")
             return
         }
@@ -68,11 +70,15 @@ final class EventTapManager {
         if let source = runLoopSource {
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
             CGEvent.tapEnable(tap: tap, enable: true)
+            isRunning = true
+            notify()
             NSLog("[EventTap] Started (listenOnly=\(listenOnly)).")
         }
     }
 
     func stop() {
+        resetInputState()
+        isRunning = false
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
         }
@@ -81,73 +87,84 @@ final class EventTapManager {
         }
         eventTap = nil
         runLoopSource = nil
+        notify()
+    }
+
+    func resetInputState() {
+        activeDownButtons.removeAll()
+        repeatOwnership.reset()
+        ButtonMapper.shared.releaseAll()
+        HIDListener.shared.resetCorrelation()
+    }
+
+    private func notify() {
+        DispatchQueue.main.async { NotificationCenter.default.post(name: Self.didUpdateNotification, object: self) }
     }
 
     private static let eventCallback: CGEventTapCallBack = { (proxy, type, event, refcon) in
         guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
         let manager = Unmanaged<EventTapManager>.fromOpaque(refcon).takeUnretainedValue()
 
-        // If tap is disabled by timeout, re-enable
+        if event.getIntegerValueField(.eventSourceUserData) == ButtonMapper.syntheticMarker {
+            return Unmanaged.passUnretained(event)
+        }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let tap = manager.eventTap {
-                CGEvent.tapEnable(tap: tap, enable: true)
-            }
+            manager.resetInputState()
+            if let tap = manager.eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
-
-        guard type == .keyDown || type == .keyUp else {
+        guard !manager.isListeningOnly else { return Unmanaged.passUnretained(event) }
+        if [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged].contains(type),
+           let drag = ButtonMapper.shared.dragEvent(for: event) {
+            return Unmanaged.passRetained(drag)
+        }
+        let signature = InputRepeatOwnership.Signature(keyboardType: event.getIntegerValueField(.keyboardEventKeyboardType), sourcePID: event.getIntegerValueField(.eventSourceUnixProcessID), sourceState: event.getIntegerValueField(.eventSourceStateID))
+        let down: Bool
+        let button: Int?
+        switch type {
+        case .keyDown, .keyUp:
+            button = KeyCodeMapper.buttonIndex(for: CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode)))
+            down = type == .keyDown
+            if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 {
+                if let button, manager.repeatOwnership.matches(button: button, signature: signature, physicallyHeld: HIDListener.shared.isPhysicallyHeld(button)) { return nil }
+                return Unmanaged.passUnretained(event)
+            }
+        case .leftMouseDown, .leftMouseUp: button = 18; down = type == .leftMouseDown
+        case .rightMouseDown, .rightMouseUp: button = 19; down = type == .rightMouseDown
+        case .otherMouseDown, .otherMouseUp:
+            let number = event.getIntegerValueField(.mouseEventButtonNumber)
+            button = number == 2 ? 17 : HIDListener.shared.usesRawTiltDecoding && (5...6).contains(number) ? Int(number) + 10 : nil
+            down = type == .otherMouseDown
+        case .scrollWheel:
+            let horizontal = event.getIntegerValueField(.scrollWheelEventDeltaAxis2)
+            button = horizontal == 0 ? nil : horizontal > 0 ? 15 : 16
+            down = true
+        default: return Unmanaged.passUnretained(event)
+        }
+        guard let button else { return Unmanaged.passUnretained(event) }
+        guard HIDListener.shared.consume(buttonIndex: button, down: down, timestamp: Double(event.timestamp) / 1_000_000_000) else {
+            if type == .keyDown || type == .keyUp { manager.repeatOwnership.invalidate(button: button) }
             return Unmanaged.passUnretained(event)
         }
-
-        let keyCode = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
-        if let buttonIndex = KeyCodeMapper.buttonIndex(for: keyCode) {
-            if type == .keyDown {
-                // If we already intercepted this button's keyDown, block further keyDowns (e.g., auto-repeat)
-                if manager.activeDownButtons.contains(buttonIndex) {
-                    return nil
-                }
-                NSLog("[EventTap] Detected Naga button \(buttonIndex) (keyCode=\(keyCode)).")
-                if !manager.isListeningOnly {
-                    var recent = HIDListener.shared.wasRecentPress(buttonIndex: buttonIndex)
-                    if !recent {
-                        for _ in 0..<5 {
-                            usleep(2000)
-                            if HIDListener.shared.wasRecentPress(buttonIndex: buttonIndex) { recent = true; break }
-                        }
-                    }
-                    if recent {
-                        ButtonMapper.shared.handlePress(buttonIndex: buttonIndex)
-                        manager.activeDownButtons.insert(buttonIndex)
-                        return nil
-                    }
-                }
-            } else if type == .keyUp {
-                // If we previously intercepted this button's keyDown, also block keyUp and send release
-                if manager.activeDownButtons.contains(buttonIndex) {
-                    manager.activeDownButtons.remove(buttonIndex)
-                    if !manager.isListeningOnly {
-                        ButtonMapper.shared.handleRelease(buttonIndex: buttonIndex)
-                    }
-                    return nil
-                }
+        if down {
+            guard ButtonMapper.shared.hasMapping(buttonIndex: button) else { return Unmanaged.passUnretained(event) }
+            if HIDListener.shared.usesRawTiltDecoding && (15...16).contains(button) {
+                if type != .scrollWheel { manager.activeDownButtons.insert(button) }
+                return nil // Raw reports alone execute tilt actions in driver mode.
             }
-        }
-
-        return Unmanaged.passUnretained(event)
-    }
-
-    private func promptForInputMonitoring() {
-        let alert = NSAlert()
-        alert.messageText = "Enable Input Monitoring"
-        alert.informativeText = "To block the original number keys, enable Input Monitoring for NagaController in System Settings → Privacy & Security → Input Monitoring."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Open Settings")
-        alert.addButton(withTitle: "Cancel")
-        let res = alert.runModal()
-        if res == .alertFirstButtonReturn {
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
-                NSWorkspace.shared.open(url)
+            if type == .scrollWheel {
+                if !HIDListener.shared.isRawControlHeld(button) { ButtonMapper.shared.handle(buttonIndex: button) }
             }
+            else {
+                manager.activeDownButtons.insert(button)
+                if type == .keyDown { manager.repeatOwnership.claim(button: button, signature: signature) }
+                ButtonMapper.shared.handlePress(buttonIndex: button)
+            }
+            return nil
         }
+        guard manager.activeDownButtons.remove(button) != nil else { return Unmanaged.passUnretained(event) }
+        manager.repeatOwnership.invalidate(button: button)
+        ButtonMapper.shared.handleRelease(buttonIndex: button)
+        return nil
     }
 }

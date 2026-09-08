@@ -2,12 +2,72 @@ import Foundation
 import Carbon.HIToolbox
 
 enum ActionType: Equatable {
+    case mouse(action: MouseAction, description: String?)
+    case disabled
     case keySequence(keys: [KeyStroke], description: String?)
     case application(path: String, description: String?)
     case systemCommand(command: String, description: String?)
     case textSnippet(text: String, description: String?)
     case macro(steps: [MacroStep], description: String?)
     case profileSwitch(profile: String, description: String?)
+}
+
+enum MouseAction: String, Codable, CaseIterable {
+    case browserBack, browserForward, leftClick, rightClick, middleClick, button4, button5
+    case scrollUp, scrollDown, scrollLeft, scrollRight
+
+    var title: String {
+        switch self {
+        case .browserBack: return "Indietro nel browser"
+        case .browserForward: return "Avanti nel browser"
+        case .leftClick: return "Clic sinistro"
+        case .rightClick: return "Clic destro"
+        case .middleClick: return "Clic centrale"
+        case .button4: return "Pulsante mouse 4"
+        case .button5: return "Pulsante mouse 5"
+        case .scrollUp: return "Scorri su"
+        case .scrollDown: return "Scorri giù"
+        case .scrollLeft: return "Scorri a sinistra"
+        case .scrollRight: return "Scorri a destra"
+        }
+    }
+
+    /// macOS browsers, except Firefox, ignore mouse buttons 4/5 for navigation.
+    /// A real click would silently do nothing, so browsers get the shortcut.
+    var browserEquivalent: MouseAction? {
+        switch self {
+        case .button4: return .browserBack
+        case .button5: return .browserForward
+        default: return nil
+        }
+    }
+
+    static let browserBundlePrefixes = [
+        "com.apple.Safari", "com.google.Chrome", "org.chromium.Chromium", "org.mozilla.",
+        "com.microsoft.edgemac", "com.brave.Browser", "company.thebrowser.Browser",
+        "com.vivaldi.Vivaldi", "com.operasoftware.", "com.kagi.kagimacOS",
+        "app.zen-browser.zen", "com.duckduckgo.macos.browser", "com.sigmaos.sigmaos"
+    ]
+
+    static func isBrowser(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return browserBundlePrefixes.contains { bundleIdentifier.hasPrefix($0) }
+    }
+}
+
+extension ActionType {
+    var displayName: String {
+        switch self {
+        case .disabled: return "Disabilitato"
+        case .mouse(let action, let description): return description ?? action.title
+        case .keySequence(let keys, let description): return description ?? keys.map { $0.formattedShortcut() }.joined(separator: ", ")
+        case .application(let path, let description): return description ?? URL(fileURLWithPath: path).lastPathComponent
+        case .systemCommand(_, let description): return description ?? "Comando shell"
+        case .textSnippet(_, let description): return description ?? "Testo"
+        case .macro(_, let description): return description ?? "Macro"
+        case .profileSwitch(let profile, let description): return description ?? "Profilo: \(profile)"
+        }
+    }
 }
 
 struct KeyStroke: Equatable, Codable {

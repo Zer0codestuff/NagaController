@@ -8,20 +8,16 @@ final class MappingWindowController: NSWindowController, NSWindowDelegate {
         let vc = MappingViewController()
         let window = NSWindow(contentViewController: vc)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.title = "NagaController — Button Mappings"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.styleMask.insert(.fullSizeContentView)
+        window.title = "NagaController"
+        window.titleVisibility = .visible
         if #available(macOS 11.0, *) {
             window.toolbarStyle = .unified
         }
         window.isMovableByWindowBackground = true
-        window.setContentSize(NSSize(width: 780, height: 560))
-        window.contentMinSize = NSSize(width: 760, height: 520)
+        window.setContentSize(NSSize(width: 1100, height: 740))
+        window.contentMinSize = NSSize(width: 960, height: 650)
         window.isReleasedWhenClosed = false
 
-        // Note: Do not wrap vc.view here. MappingViewController already draws a full-size
-        // NSVisualEffectView background. Wrapping again caused a self-subview cycle and hang.
         super.init(window: window)
     }
 
@@ -31,7 +27,6 @@ final class MappingWindowController: NSWindowController, NSWindowDelegate {
     func show() {
         guard let window else { return }
 
-        previousActivationPolicy = nil
         let currentPolicy = NSApp.activationPolicy()
         if currentPolicy != .regular {
             previousActivationPolicy = currentPolicy

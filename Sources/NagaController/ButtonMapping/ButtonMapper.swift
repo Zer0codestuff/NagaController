@@ -4,103 +4,153 @@ import Carbon.HIToolbox
 final class ButtonMapper {
     static let shared = ButtonMapper()
 
-    // Temporary in-memory mapping for Phase 1
-    // 1 -> Cmd+C, 2 -> Cmd+V, others log only
-    private var mapping: [Int: ActionType] = [
-        1: .keySequence(keys: [KeyStroke(key: "c", modifiers: ["cmd"])], description: "Copy"),
-        2: .keySequence(keys: [KeyStroke(key: "v", modifiers: ["cmd"])], description: "Paste")
-    ]
+    static let syntheticMarker: Int64 = 0x4e4147414354524c
+    private var mapping: [Int: ActionType] = [:]
+    private enum Hold { case key(CGKeyCode, CGEventFlags), mouse(CGMouseButton) }
+    private var activeHolds: [Int: Hold] = [:]
+    private var pressed: Set<Int> = []
+    private var generation = 0
+    private let eventSink: ((CGEvent) -> Void)?
 
-    // Track active press-and-hold mappings (buttonIndex -> (keyCode, flags))
-    private var activeHolds: [Int: (CGKeyCode, CGEventFlags)] = [:]
+    init(eventSink: ((CGEvent) -> Void)? = nil) { self.eventSink = eventSink }
 
-    // Allow external configuration to replace the mapping
+    func hasMapping(buttonIndex: Int) -> Bool { mapping[buttonIndex] != nil }
+
     func updateMapping(_ newMapping: [Int: ActionType]) {
-        self.mapping = newMapping
-        NSLog("[Mapping] Updated mapping for \(newMapping.count) button(s)")
+        releaseAll()
+        EventTapManager.shared.resetInputState()
+        mapping = newMapping
+    }
+
+    func releaseAll() {
+        generation += 1
+        for button in Array(activeHolds.keys) { handleRelease(buttonIndex: button) }
+        pressed.removeAll()
     }
 
     func handle(buttonIndex: Int) {
-        guard let action = mapping[buttonIndex] else {
-            NSLog("[Mapping] No action mapped for button \(buttonIndex).")
-            return
-        }
-        perform(action: action)
+        handlePress(buttonIndex: buttonIndex)
+        handleRelease(buttonIndex: buttonIndex)
     }
 
-    // Handle physical button press (down). For single-key mappings, send keyDown and remember for hold.
     func handlePress(buttonIndex: Int) {
-        guard let action = mapping[buttonIndex] else {
-            NSLog("[Mapping] No action mapped for button \(buttonIndex).")
-            return
-        }
+        guard let action = mapping[buttonIndex], pressed.insert(buttonIndex).inserted else { return }
         switch action {
-        case .keySequence(let keys, _):
-            if let stroke = keys.first, keys.count == 1 {
-                let keyCode = effectiveKeyCode(for: stroke)
-                let flags = modifierFlags(from: stroke.modifiers)
-                if let code = keyCode, let eventDown = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true) {
-                    eventDown.flags = flags
-                    eventDown.post(tap: .cghidEventTap)
-                    activeHolds[buttonIndex] = (code, flags)
-                    NSLog("[Mapping] Hold start for button \(buttonIndex) -> key=\(stroke.displayLabel), flags=\(flags)")
-                } else {
-                    // If no keycode, fallback to sending sequence taps to stay functional
-                    for stroke in keys { sendKeyStroke(stroke) }
-                }
-            } else {
-                for stroke in keys { sendKeyStroke(stroke) }
+        case .keySequence(let keys, _) where keys.count == 1:
+            if let code = effectiveKeyCode(for: keys[0]) {
+                let flags = modifierFlags(from: keys[0].modifiers)
+                activeHolds[buttonIndex] = .key(code, flags)
+                postKey(code, flags: flags, down: true)
             }
-        default:
-            perform(action: action)
+        case .mouse(let action, _):
+            if let navigation = action.browserEquivalent, frontmostIsBrowser() {
+                performMouse(navigation)
+            } else if let button = mouseButton(action) {
+                activeHolds[buttonIndex] = .mouse(button)
+                postMouse(button, down: true)
+            } else { performMouse(action) }
+        default: perform(action: action)
         }
     }
 
-    // Handle physical button release (up). If we are holding, send keyUp and clear state.
     func handleRelease(buttonIndex: Int) {
-        if let (keyCode, flags) = activeHolds.removeValue(forKey: buttonIndex) {
-            if let eventUp = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) {
-                eventUp.flags = flags
-                eventUp.post(tap: .cghidEventTap)
-                NSLog("[Mapping] Hold end for button \(buttonIndex)")
+        pressed.remove(buttonIndex)
+        guard let hold = activeHolds.removeValue(forKey: buttonIndex) else { return }
+        // Do not release an output another physical input still holds.
+        switch hold {
+        case .key(let code, let flags):
+            if !activeHolds.values.contains(where: { if case .key(let c, _) = $0 { return c == code }; return false }) {
+                postKey(code, flags: flags, down: false)
+            }
+        case .mouse(let button):
+            if !activeHolds.values.contains(where: { if case .mouse(let b) = $0 { return b == button }; return false }) {
+                postMouse(button, down: false)
             }
         }
+    }
+
+    func dragEvent(for event: CGEvent) -> CGEvent? {
+        guard let button = activeHolds.values.compactMap({ hold -> CGMouseButton? in
+            if case .mouse(let button) = hold { return button }; return nil
+        }).sorted(by: { $0.rawValue < $1.rawValue }).first else { return nil }
+        let type: CGEventType = button == .left ? .leftMouseDragged : button == .right ? .rightMouseDragged : .otherMouseDragged
+        let drag = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: event.location, mouseButton: button)
+        drag?.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMarker)
+        drag?.setIntegerValueField(.mouseEventDeltaX, value: event.getIntegerValueField(.mouseEventDeltaX))
+        drag?.setIntegerValueField(.mouseEventDeltaY, value: event.getIntegerValueField(.mouseEventDeltaY))
+        return drag
     }
 
     private func perform(action: ActionType) {
         switch action {
-        case .keySequence(let keys, _):
-            for stroke in keys {
-                sendKeyStroke(stroke)
-            }
-        case .application(let path, _):
-            NSWorkspace.shared.open(URL(fileURLWithPath: path))
-        case .systemCommand(let command, _):
-            runShell(command)
-        case .textSnippet(let text, _):
-            typeText(text)
-        case .macro(let steps, _):
-            runMacro(steps)
-        case .profileSwitch(let profile, _):
-            NSLog("[Mapping] Switch to profile: \(profile) (not implemented)")
+        case .disabled: break
+        case .mouse(let action, _): performMouse(action)
+        case .keySequence(let keys, _): keys.forEach(sendKeyStroke)
+        case .application(let path, _): DispatchQueue.main.async { NSWorkspace.shared.open(URL(fileURLWithPath: path)) }
+        case .systemCommand(let command, _): DispatchQueue.global(qos: .userInitiated).async { self.runShell(command) }
+        case .textSnippet(let text, _): runMacro([MacroStep(type: "text", text: text)])
+        case .macro(let steps, _): runMacro(steps)
+        case .profileSwitch(let profile, _): DispatchQueue.main.async { ConfigManager.shared.setCurrentProfile(profile) }
         }
     }
 
+    private func post(_ event: CGEvent?) {
+        guard let event else { return }
+        event.setIntegerValueField(.eventSourceUserData, value: Self.syntheticMarker)
+        if let eventSink { eventSink(event) }
+        else { event.post(tap: .cghidEventTap) }
+    }
+
+    private func postKey(_ code: CGKeyCode, flags: CGEventFlags, down: Bool) {
+        let event = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: down)
+        event?.flags = flags
+        post(event)
+    }
+
     private func sendKeyStroke(_ stroke: KeyStroke) {
-        // Map simple keys (letters) to key codes; limited for Phase 1
-        guard let keyCode = effectiveKeyCode(for: stroke) else { return }
-
+        guard let code = effectiveKeyCode(for: stroke) else { return }
         let flags = modifierFlags(from: stroke.modifiers)
+        postKey(code, flags: flags, down: true)
+        postKey(code, flags: flags, down: false)
+    }
 
-        // Key down
-        if let eventDown = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true) {
-            eventDown.flags = flags
-            eventDown.post(tap: .cghidEventTap)
+    private func mouseButton(_ action: MouseAction) -> CGMouseButton? {
+        switch action {
+        case .leftClick: return .left
+        case .rightClick: return .right
+        case .middleClick: return .center
+        case .button4: return CGMouseButton(rawValue: 3)
+        case .button5: return CGMouseButton(rawValue: 4)
+        default: return nil
         }
-        // Key up
-        if let eventUp = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) {
-            eventUp.flags = flags
-            eventUp.post(tap: .cghidEventTap)
+    }
+
+    private func postMouse(_ button: CGMouseButton, down: Bool) {
+        let type: CGEventType = button == .left ? (down ? .leftMouseDown : .leftMouseUp) : button == .right ? (down ? .rightMouseDown : .rightMouseUp) : (down ? .otherMouseDown : .otherMouseUp)
+        let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: CGEvent(source: nil)?.location ?? .zero, mouseButton: button)
+        event?.setIntegerValueField(.mouseEventClickState, value: 1)
+        post(event)
+    }
+
+    var frontmostBundleIdentifier: () -> String? = { NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
+
+    private func frontmostIsBrowser() -> Bool {
+        MouseAction.isBrowser(bundleIdentifier: frontmostBundleIdentifier())
+    }
+
+    private func performMouse(_ action: MouseAction) {
+        if let navigation = action.browserEquivalent, frontmostIsBrowser() { performMouse(navigation); return }
+        if let button = mouseButton(action) { postMouse(button, down: true); postMouse(button, down: false); return }
+        switch action {
+        case .browserBack, .browserForward:
+            DispatchQueue.main.async {
+                if let stroke = KeyboardLayoutShortcut.browserStroke(for: action) { self.sendKeyStroke(stroke) }
+            }
+        case .scrollUp, .scrollDown, .scrollLeft, .scrollRight:
+            let vertical: Int32 = action == .scrollUp ? 3 : action == .scrollDown ? -3 : 0
+            let horizontal: Int32 = action == .scrollLeft ? 3 : action == .scrollRight ? -3 : 0
+            post(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: vertical, wheel2: horizontal, wheel3: 0))
+        default: break
         }
     }
 
@@ -138,31 +188,33 @@ final class ButtonMapper {
     }
 
     func runMacro(_ steps: [MacroStep]) {
-        for step in steps {
-            switch step.type {
-            case "key":
-                if let ks = step.keyStroke { sendKeyStroke(ks) }
-            case "text":
-                if let text = step.text { pasteText(text) }
-            case "delay":
-                if let ms = step.delayMs { Thread.sleep(forTimeInterval: TimeInterval(ms) / 1000.0) }
-            default:
-                break
+        let token = generation
+        func next(_ index: Int) {
+            guard token == self.generation, index < steps.count else { return }
+            let step = steps[index]
+            if step.type == "delay" {
+                let seconds = Double(max(0, min(step.delayMs ?? 0, 600_000))) / 1000
+                DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { next(index + 1) }
+                return
             }
+            if step.type == "key", let key = step.keyStroke { self.sendKeyStroke(key) }
+            if step.type == "text", let text = step.text { self.typeText(text) }
+            DispatchQueue.main.async { next(index + 1) }
         }
-    }
-
-    private func pasteText(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-        // Cmd+V
-        sendKeyStroke(KeyStroke(key: "v", modifiers: ["cmd"]))
+        DispatchQueue.main.async { next(0) }
     }
 
     private func typeText(_ text: String) {
-        for scalar in text.unicodeScalars {
-            guard let keyStroke = KeyStroke.fromCharacter(scalar) else { continue }
-            sendKeyStroke(keyStroke)
+        // Unicode events preserve the clipboard and non-Latin text.
+        for character in text {
+            let units = Array(String(character).utf16)
+            for down in [true, false] {
+                let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down)
+                units.withUnsafeBufferPointer { buffer in
+                    event?.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
+                }
+                post(event)
+            }
         }
     }
 }

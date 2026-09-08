@@ -1,74 +1,115 @@
 import Cocoa
-import UserNotifications
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
-    private let eventTapManager = EventTapManager.shared
-    private var batteryObserver: NSObjectProtocol?
-    private var didAlertLowBattery = false
-    private var useEmojiInStatus = false
+    private var observers: [NSObjectProtocol] = []
+    private var permissionTimer: Timer?
+    private var hadInputPermission = false
+    private var isTerminating = false
+
+    private var snapshotPath: String? {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: "--snapshot"), args.indices.contains(index + 1) else { return nil }
+        return args[index + 1]
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Ensure Accessibility permissions
-        PermissionManager.shared.ensureAccessibilityPermission()
-
-        // Load configuration (profiles, settings)
         ConfigManager.shared.load()
+        installApplicationMenu()
 
-        // Start HID listener (filters Naga device presses)
-        _ = HIDListener.shared
-
-        // Start Bluetooth battery monitoring (BLE Battery Service 0x180F)
-        BatteryMonitor.shared.start()
-
-        // Status bar item (variable length to show %)
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        if let button = statusItem.button {
-            if let icon = NSImage(named: "MenuBar") {
-                icon.isTemplate = true
-                button.image = icon
-                button.imagePosition = .imageLeading
-            } else {
-                // Fallback to an SF Symbol if available; else use emoji in the title
-                if let sym = UIStyle.symbol("computermouse", size: 14, weight: .regular)
-                    ?? UIStyle.symbol("mouse", size: 14, weight: .regular)
-                    ?? UIStyle.symbol("battery.100", size: 14, weight: .regular) {
-                    sym.isTemplate = true
-                    button.image = sym
-                    button.imagePosition = .imageLeading
-                } else {
-                    useEmojiInStatus = true
-                }
+        if snapshotPath == nil {
+            PermissionManager.shared.requestMissingPermissions()
+            HIDListener.shared.start()
+            RazerDeviceController.shared.refresh()
+            hadInputPermission = PermissionManager.shared.hasInputMonitoringPermission()
+            startRemappingIfPermitted()
+            permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.checkPermissions() }
             }
-            button.action = #selector(togglePopover(_:))
-            button.target = self
         }
 
-        // Popover content
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.button?.image = NSImage(systemSymbolName: "computermouse", accessibilityDescription: "NagaController")
+        statusItem.button?.image?.isTemplate = true
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(togglePopover)
         popover.behavior = .transient
-        if #available(macOS 10.14, *) {
-            popover.appearance = NSAppearance(named: .vibrantDark)
-        }
         popover.contentViewController = MainViewController()
-
-        // Notifications (low battery alerts)
-        requestNotificationAuthorizationIfPossible()
-
-        // Observe battery updates
-        batteryObserver = NotificationCenter.default.addObserver(forName: BatteryMonitor.didUpdateNotification, object: nil, queue: .main) { [weak self] _ in
-            self?.handleBatteryUpdate()
+        for name in [RazerDeviceController.didUpdateNotification, EventTapManager.didUpdateNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in
+                    if name == RazerDeviceController.didUpdateNotification {
+                        HIDListener.shared.setDriverModeEnabled(RazerDeviceController.shared.driverModeEnabled)
+                    }
+                    self?.updateStatusItem()
+                }
+            })
         }
-        // Initialize status item text
-        updateStatusItemBattery(level: BatteryMonitor.shared.batteryLevel)
+        updateStatusItem()
+        MappingWindowController.shared.show()
 
-        // Start event tap based on persisted setting
-        let remapEnabled = ConfigManager.shared.getRemappingEnabled()
-        eventTapManager.start(listenOnly: !remapEnabled)
+        if let path = snapshotPath {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                self.captureWindow(to: path)
+            }
+        }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        MappingWindowController.shared.show()
+        return true
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        eventTapManager.stop()
+        permissionTimer?.invalidate()
+        EventTapManager.shared.stop()
+        HIDListener.shared.stop()
+        observers.forEach(NotificationCenter.default.removeObserver)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard snapshotPath == nil else { return .terminateNow }
+        guard !isTerminating else { return .terminateLater }
+        isTerminating = true
+        EventTapManager.shared.stop()
+        DispatchQueue.main.async {
+            RazerDeviceController.shared.restoreOriginalMode {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+        }
+        return .terminateLater
+    }
+
+    private func startRemappingIfPermitted() {
+        let permission = PermissionManager.shared
+        guard permission.hasAccessibilityPermission(), permission.hasInputMonitoringPermission() else { return }
+        EventTapManager.shared.start(listenOnly: !ConfigManager.shared.getRemappingEnabled())
+    }
+
+    private func checkPermissions() {
+        let permission = PermissionManager.shared
+        let input = permission.hasInputMonitoringPermission()
+        if input && !hadInputPermission {
+            HIDListener.shared.stop()
+            HIDListener.shared.start()
+            RazerDeviceController.shared.refresh()
+        }
+        hadInputPermission = input
+        if !permission.hasAccessibilityPermission() || !input {
+            if EventTapManager.shared.isRunning { EventTapManager.shared.stop() }
+        } else if !EventTapManager.shared.isRunning {
+            startRemappingIfPermitted()
+        }
+        updateStatusItem()
+    }
+
+    private func updateStatusItem() {
+        let hardware = RazerDeviceController.shared
+        statusItem?.button?.title = hardware.batteryLevel.map { " \($0)%" } ?? ""
+        let active = EventTapManager.shared.isRunning && EventTapManager.shared.isRemappingEnabled
+        statusItem?.button?.toolTip = active ? "NagaController · Rimappatura attiva" : "NagaController · Rimappatura in pausa"
     }
 
     @objc private func togglePopover(_ sender: Any?) {
@@ -76,48 +117,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(sender)
         } else {
-            if let mainVC = popover.contentViewController as? MainViewController {
-                mainVC.refreshPermissionStatuses()
-            }
+            (popover.contentViewController as? MainViewController)?.refreshPermissionStatuses()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         }
     }
 
-    private func handleBatteryUpdate() {
-        let level = BatteryMonitor.shared.batteryLevel
-        updateStatusItemBattery(level: level)
-        guard let lvl = level else { return }
-        if lvl <= 20 && !didAlertLowBattery {
-            didAlertLowBattery = true
-            let content = UNMutableNotificationContent()
-            content.title = "Mouse battery low"
-            content.body = "Your Naga battery is at \(lvl)%"
-            let req = UNNotificationRequest(identifier: "naga.lowbattery", content: content, trigger: nil)
-            UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
-        }
-        if lvl >= 25 {
-            didAlertLowBattery = false
-        }
+    @objc private func showSettings() {
+        popover.performClose(nil)
+        MappingWindowController.shared.show()
     }
 
-    private func updateStatusItemBattery(level: Int?) {
-        guard let button = statusItem.button else { return }
-        let hasImage = (button.image != nil)
-        if let lvl = level {
-            button.title = (hasImage ? " " : "🖱️ ") + "\(lvl)%"
-            button.toolTip = "Naga battery: \(lvl)%"
-        } else {
-            button.title = hasImage ? "" : "🖱️"
-            button.toolTip = "Naga battery: —"
-        }
+    private func installApplicationMenu() {
+        let menu = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        let settings = NSMenuItem(title: "Impostazioni…", action: #selector(showSettings), keyEquivalent: ",")
+        settings.target = self
+        appMenu.addItem(settings)
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Esci da NagaController", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        menu.addItem(appItem)
+        let editItem = NSMenuItem()
+        editItem.title = "Modifica"
+        let edit = NSMenu(title: "Modifica")
+        edit.addItem(withTitle: "Annulla", action: Selector(("undo:")), keyEquivalent: "z")
+        edit.addItem(withTitle: "Taglia", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "Copia", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "Incolla", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "Seleziona tutto", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        menu.addItem(editItem)
+        NSApp.mainMenu = menu
     }
 
-    private func requestNotificationAuthorizationIfPossible() {
-        guard Bundle.main.bundleIdentifier != nil else {
-            NSLog("[Notifications] Skipping authorization; bundle identifier missing (likely running via swift run).")
+    private func captureWindow(to path: String) {
+        guard let view = MappingWindowController.shared.window?.contentView,
+              let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            fputs("Unable to capture the settings window.\n", stderr)
+            NSApp.terminate(nil)
             return
         }
-
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        view.layoutSubtreeIfNeeded()
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        do {
+            guard let png = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+            try png.write(to: URL(fileURLWithPath: path), options: .atomic)
+            print("UI snapshot: \(path)")
+        } catch {
+            fputs("Snapshot failed: \(error.localizedDescription)\n", stderr)
+        }
+        NSApp.terminate(nil)
     }
 }

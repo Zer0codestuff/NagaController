@@ -1,136 +1,85 @@
 # NagaController
 
-[![GitHub stars](https://img.shields.io/github/stars/DParent10/NagaController?style=social)](https://github.com/DParent10/NagaController)
-
-A macOS menu bar app to remap the 12 side buttons of the Razer Naga V2 Hyperspeed. Intercepts the default 1–0–=– key events and maps them to actions like key sequences, app launching, and macros. Includes Bluetooth battery level display.
-
-**[⬇️ Download Latest Release (v0.1.0)](https://github.com/DParent10/NagaController/releases/latest)**
+A macOS menu bar app for the Razer Naga V2 HyperSpeed. It remaps the 12 side buttons and the extra mouse controls, and reads or changes DPI and polling rate over the USB receiver. Fork of [DParent10/NagaController](https://github.com/DParent10/NagaController).
 
 ## Features
 
-- Remap Naga side buttons 1–12 to:
-  - Key sequences
-  - Launch applications
-  - Simple macros
-  - Profile switching
-- Toggle remapping ON/OFF from the menu bar
-- Configure mappings in a dedicated window
-- Battery percentage display via Bluetooth (UUID 0x180F / 0x2A19)
-- Modern dark UI with Razer-green accents
+- Native settings window (SwiftUI) with three sections: Pulsanti, Sensibilità, Stato
+- Physical 3x4 grid for side buttons 1 to 12, plus the two top DPI buttons, wheel tilt left/right, middle, left and right click (logical indices 13 to 19)
+- Actions per button: keyboard shortcut (recorded or chosen from a preset list, with modifiers), multi-step key sequence, mouse action (browser back/forward, real mouse buttons 4/5, middle/left/right click, scroll), text snippet, launch application, shell command, macro, profile switch, disabled, or original passthrough
+- Profiles with auto-save, import/export as JSON, rename/duplicate/delete
+- DPI (100 to 30000 per axis) and polling rate (125/500/1000 Hz) read and written through the Razer USB protocol, with read-back verification
+- Optional "driver mode" for the top DPI buttons, with journaled restore of the original mode at quit
+- Menu bar popover with remapping toggle and battery level when available
 
 ## Requirements
 
 - macOS 13.0 or later
-- Razer Naga V2 Hyperspeed (other Naga models may work; device matching by vendor/product name is included)
-- Bluetooth enabled (for battery reporting)
+- Razer Naga V2 HyperSpeed connected through its HyperSpeed USB receiver (`1532:00b4`) for DPI, polling rate and driver mode. Remapping also works over Bluetooth; hardware settings do not.
+- Xcode Command Line Tools with Swift 5.9+ to build from source
 
-## Installation
+## Install and first run
 
-1. Download `NagaController-v0.1.0.dmg` from [Releases](https://github.com/DParent10/NagaController/releases/latest)
-2. Open the DMG file
-3. Drag `NagaController.app` to the Applications folder
-4. Double-click `NagaController.app` to launch
+1. Build the app bundle (see below) or download a release.
+2. Move `NagaController.app` where you want to keep it. Permissions are tied to the app location, so do not move it afterwards.
+3. Launch it. macOS prompts for two permissions; both are required:
+   - Accessibility (System Settings > Privacy & Security > Accessibility)
+   - Input Monitoring (System Settings > Privacy & Security > Input Monitoring)
+4. Open the settings window from the menu bar icon, turn on "Rimappatura", and assign actions.
 
-### First run setup
-
-1. Click the menu bar icon → turn ON "Enable remapping"
-2. Click "Configure mappings…" to set actions for buttons 1–12
-
-### Permissions
-
-- **Accessibility**: System Settings → Privacy & Security → Accessibility → enable "NagaController"
-- **Bluetooth (battery)**: System Settings → Privacy & Security → Bluetooth → allow "NagaController"
-- **Tip**: Always launch the same `.app` you granted permissions to (avoid running other binaries) so permissions persist
-
-## Known limitations
-
-- Battery percentage works over Bluetooth (BLE) only; vendor 2.4GHz dongles typically don't expose battery via public APIs
-
-## Supported Devices
-
-- Razer Naga family, tested on: `Naga V2 Hyperspeed (Naga V2 HS)`
-- Matching logic in `Sources/NagaController/HID/HIDListener.swift`:
-  - Vendor IDs: `0x1532` (Razer) or `0x068e` (observed on some Naga V2 HS units)
-  - OR product name contains `"naga"` (case-insensitive) as a fallback
-- Regular keyboards are not remapped. Events are only blocked when a recent HID press from a matching Naga device is correlated with the event tap
-
-## Troubleshooting
-
-1. Grant Accessibility permissions (System Settings → Privacy & Security → Accessibility) and ensure the app is checked
-2. Launch from Terminal to see diagnostics:
-   ```bash
-   ./NagaController.app/Contents/MacOS/NagaController
-   ```
-3. Turn ON "Enable remapping" in the menu bar popover
-4. Expected logs:
-   - Startup:
-     - `[HID] Listener started (vendors: 0x68e, 0x1532; plus product contains 'naga')`
-     - `[HID] Device matched: vendor=0x68e, product=Naga V2 HS` (your device may vary)
-   - On side-button press:
-     - `[HID] Press recorded: vendor=0x..., product=..., usage=0x1e, buttonIndex=1` (etc.)
-   - On keyboard safety (non-Naga):
-     - `[HID] Ignored keyboard usage from device: vendor=0x..., product=...`
-5. If mouse buttons still type digits instead of your mapping:
-   - Ensure remapping is enabled
-   - Verify the Accessibility permission is granted
-   - Paste the relevant `[HID] Device matched` and `[HID] Press recorded` lines into an issue so we can whitelist your device if needed
-
-## Battery (Bluetooth)
-
-NagaController can show your mouse battery percentage when the mouse is connected over Bluetooth (BLE). It uses the standard Battery Service (UUID `0x180F`) and Battery Level characteristic (`0x2A19`).
-
-This does not work over the HyperSpeed 2.4GHz dongle — most vendor dongles do not expose battery via public APIs.
-
-### How it works
-
-- On launch, the app requests Bluetooth permission and then:
-  - Tries `retrieveConnectedPeripherals(withServices: [0x180F])` to attach to already-connected devices
-  - Falls back to scanning for devices that advertise `0x180F` or whose name contains "Razer"/"Naga"
-- Once connected, it reads Battery Level and subscribes for updates
-- The battery percentage is displayed in the menu bar title and in the popover. At 20% or lower, the popover label turns red and a local notification is shown
-
-### Requirements
-
-- System Settings → Privacy & Security → Bluetooth → allow "NagaController"
-- Connect your mouse via Bluetooth and ensure it's awake
-
-### If you see "Battery: —"
-
-- Ensure the device is connected over Bluetooth (not via the HyperSpeed dongle)
-- Wake the mouse (move/click) and re-open the popover
-- Launch from Terminal to see BLE diagnostics
+The Stato section shows the current permission state, the detected device, and the last input seen. If a permission was granted after launch, macOS may require restarting the app.
 
 ## Build from source
 
 ```bash
-# Build release app bundle
-bash Scripts/build_app.sh
-
-# Run the app
-./NagaController.app/Contents/MacOS/NagaController
+bash Scripts/build_app.sh        # release build, ad-hoc signed, writes ./NagaController.app
+open NagaController.app
 ```
 
-### Create DMG for distribution
+Without a signing identity the bundle is ad-hoc signed and macOS forgets its permissions on every rebuild. For development, create a local self-signed identity once:
 
 ```bash
-cd dmg-assets
-./setup-app-icon-and-dmg-simple.sh
+bash Scripts/make_dev_certificate.sh   # creates "NagaController Dev" in the login keychain
 ```
 
-This creates a signed and notarized DMG installer.
+`build_app.sh` picks it up automatically. Set `SIGNING_IDENTITY="Developer ID Application: ..."` to use a real identity instead. Builds are not notarized.
 
-## Project Structure
+## Tests and diagnostics
 
-- `Sources/NagaController/` — App source code (Swift + AppKit)
-- `Resources/` — Info.plist, default profiles
-- `Scripts/` — Build helper scripts
-- `Tests/` — Unit tests
-- `dmg-assets/` — Icon, background, and DMG creation script
+```bash
+bash Scripts/test.sh             # dependency-free checks, no XCTest needed
+```
 
-## Feedback
+Read-only hardware diagnostics (requires Input Monitoring for the launching process):
 
-Issues and logs are welcome. If your Naga isn't detected, please include the `[HID]` lines from the app's console output.
+```bash
+open NagaController.app --args --diagnose-file /tmp/naga.json
+cat /tmp/naga.json
+```
 
-## License
+Add `--verify-hardware` to also write back the current DPI and polling values and confirm the read-back. Values are not changed.
 
-See [LICENSE](LICENSE) for details.
+Add `--snapshot /tmp/ui.png` to render the settings window to a PNG without touching the hardware.
+
+## How input handling works
+
+- `HIDListener` observes only Razer devices whose product ID is `0x00b4` or whose name contains "naga", on a background run loop.
+- Each physical press/release is recorded with its timestamp. `EventTapManager` consumes a matching system event only if it arrives within 25 ms of a recorded HID edge, so regular keyboards are never blocked.
+- Synthetic events are tagged through `eventSourceUserData` and ignored by the tap.
+- Held buttons are released on stop, disconnect, profile change, or when the tap is disabled by the system.
+- Buttons 13 to 16 (DPI, wheel tilt) rely on documented driver-mode reports and are only reported when a matching report is observed.
+
+## Project structure
+
+- `Sources/NagaController/ButtonMapping/` action model, event synthesis, layout-aware browser shortcuts
+- `Sources/NagaController/EventTap/` CGEvent tap and correlation with HID input
+- `Sources/NagaController/HID/` IOHID listener and pure report decoding
+- `Sources/NagaController/Hardware/` Razer USB protocol codec, IOHID feature-report transport, device controller
+- `Sources/NagaController/UI/` SwiftUI settings window and menu bar popover
+- `Sources/NagaController/Utils/` profiles storage, permissions, battery monitor
+- `Tests/` dependency-free test sources run by `Scripts/test.sh`
+- `Resources/` Info.plist and bundled default profiles
+
+## Credits and license
+
+Protocol facts come from the published OpenRazer sources and pull request 2850; no GPL code is included. Licensed under MIT, see [LICENSE](LICENSE).

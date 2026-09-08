@@ -1,5 +1,12 @@
 {
   "profiles": {
+    "Navigazione": {
+      "buttons": {
+        "1": { "type": "mouse", "mouseAction": "browserBack", "description": "Indietro" },
+        "2": { "type": "mouse", "mouseAction": "browserForward", "description": "Avanti" },
+        "3": { "type": "mouse", "mouseAction": "middleClick", "description": "Clic centrale" }
+      }
+    },
     "Default": {
       "buttons": {
         "1": {

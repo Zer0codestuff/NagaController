@@ -2,82 +2,56 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD_DIR="$PROJECT_ROOT/.build"
-SCRATCH_DIR="$(mktemp -d /tmp/naga-build-XXXXXX)"
-APP_NAME="NagaController"
-APP_BUNDLE="$PROJECT_ROOT/$APP_NAME.app"
-EXECUTABLE_PATH="$SCRATCH_DIR/release/$APP_NAME"
+APP_BUNDLE="$PROJECT_ROOT/NagaController.app"
+CONFIGURATION="${CONFIGURATION:-release}"
+DEV_IDENTITY="NagaController Dev"
+if [[ -z "${SIGNING_IDENTITY:-}" ]]; then
+  # A stable identity keeps TCC grants across rebuilds; see Scripts/make_dev_certificate.sh.
+  if security find-identity -v -p codesigning 2>/dev/null | grep -Fq "\"$DEV_IDENTITY\""; then
+    SIGNING_IDENTITY="$DEV_IDENTITY"
+  else
+    SIGNING_IDENTITY="-"
+  fi
+fi
 
-cleanup() {
-  rm -rf "$SCRATCH_DIR"
-}
-trap cleanup EXIT
+printf 'Building NagaController (%s)...\n' "$CONFIGURATION"
+swift build --package-path "$PROJECT_ROOT" -c "$CONFIGURATION" --product NagaController
+BIN_DIR="$(swift build --package-path "$PROJECT_ROOT" -c "$CONFIGURATION" --show-bin-path)"
 
-echo "Cleaning previous build artifacts..."
-rm -rf "$BUILD_DIR" || true
-swift package --package-path "$PROJECT_ROOT" clean >/dev/null 2>&1 || true
+STAGING="$(mktemp -d "$PROJECT_ROOT/.build/app-stage.XXXXXX")"
+trap 'rm -rf "$STAGING"' EXIT
+STAGED_APP="$STAGING/NagaController.app"
+mkdir -p "$STAGED_APP/Contents/MacOS" "$STAGED_APP/Contents/Resources"
+cp "$BIN_DIR/NagaController" "$STAGED_APP/Contents/MacOS/NagaController"
+cp -R "$PROJECT_ROOT/Resources/." "$STAGED_APP/Contents/Resources/"
+cp "$PROJECT_ROOT/Resources/Info.plist" "$STAGED_APP/Contents/Info.plist"
+plutil -lint "$STAGED_APP/Contents/Info.plist"
+ICONSET="$STAGING/AppIcon.iconset"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$PROJECT_ROOT/dmg-assets/AppIcon.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  double=$((size * 2))
+  sips -z "$double" "$double" "$PROJECT_ROOT/dmg-assets/AppIcon.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$STAGED_APP/Contents/Resources/AppIcon.icns"
 
-echo "Building for production..."
-# Build release executable
-swift build -c release --package-path "$PROJECT_ROOT" --scratch-path "$SCRATCH_DIR"
+codesign --force --sign "$SIGNING_IDENTITY" "$STAGED_APP"
+codesign --verify --strict "$STAGED_APP"
 
-# Verify the executable was actually built
-if [[ ! -f "$EXECUTABLE_PATH" ]]; then
-  echo "❌ Error: Build failed - executable not found at $EXECUTABLE_PATH"
+if [[ -e "$APP_BUNDLE" ]]; then
+  mv "$APP_BUNDLE" "$STAGING/previous.app"
+fi
+if ! mv "$STAGED_APP" "$APP_BUNDLE"; then
+  if [[ -e "$STAGING/previous.app" ]]; then
+    mv "$STAGING/previous.app" "$APP_BUNDLE"
+  fi
   exit 1
 fi
-
-echo "Creating app bundle..."
-# Create app bundle structure
-rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_BUNDLE/Contents/MacOS"
-mkdir -p "$APP_BUNDLE/Contents/Resources/Icons"
-
-# Copy executable and resources
-cp "$EXECUTABLE_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
-chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
-cp -R "$PROJECT_ROOT/Resources/"* "$APP_BUNDLE/Contents/Resources/" 2>/dev/null || true
-
-# Create/merge Info.plist
-if [[ -f "$PROJECT_ROOT/Resources/Info.plist" ]]; then
-  cp "$PROJECT_ROOT/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+printf '\nBuilt: %s\n' "$APP_BUNDLE"
+if [[ "$SIGNING_IDENTITY" == "-" ]]; then
+  printf 'Local ad-hoc signature. This build is not notarized.\n'
+  printf 'Permissions must be granted again after every rebuild. Run Scripts/make_dev_certificate.sh once to avoid this.\n'
 else
-  cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleIdentifier</key>
-  <string>com.example.NagaController</string>
-  <key>CFBundleName</key>
-  <string>NagaController</string>
-  <key>CFBundleExecutable</key>
-  <string>NagaController</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>0.1.0</string>
-  <key>CFBundleVersion</key>
-  <string>1</string>
-  <key>LSMinimumSystemVersion</key>
-  <string>13.0</string>
-  <key>LSUIElement</key>
-  <true/>
-  <key>NSAppleEventsUsageDescription</key>
-  <string>NagaController needs to send keyboard events for button remapping.</string>
-</dict>
-</plist>
-PLIST
+  printf 'Signed with "%s". Not notarized.\n' "$SIGNING_IDENTITY"
 fi
-
-echo "Code signing..."
-# Ad-hoc codesign (helps TCC and launching)
-codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null || true
-
-# Remove quarantine attributes if present
-xattr -dr com.apple.quarantine "$APP_BUNDLE" 2>/dev/null || true
-
-echo "✅ Build successful!"
-echo "📦 App bundle: $APP_BUNDLE"
-echo ""
-echo "To run: open $APP_BUNDLE"
+printf 'Launch: open "%s"\n' "$APP_BUNDLE"
