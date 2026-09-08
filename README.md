@@ -20,12 +20,13 @@ A macOS menu bar app for the Razer Naga V2 HyperSpeed. It remaps the 12 side but
 
 ## Install and first run
 
-1. Build the app bundle (see below) or download a release.
-2. Move `NagaController.app` where you want to keep it. Permissions are tied to the app location, so do not move it afterwards.
-3. Launch it. macOS prompts for two permissions; both are required:
+1. Download `NagaController-v2.0.0.dmg` from the [latest release](https://github.com/Zer0codestuff/NagaController/releases/latest), or build the app bundle (see below).
+2. Open the DMG and drag `NagaController.app` to Applications. Permissions are tied to the app location, so do not move it afterwards.
+3. The release is not notarized. On first launch right-click the app and choose Open, or run `xattr -dr com.apple.quarantine /Applications/NagaController.app`.
+4. Launch it. macOS prompts for two permissions; both are required:
    - Accessibility (System Settings > Privacy & Security > Accessibility)
    - Input Monitoring (System Settings > Privacy & Security > Input Monitoring)
-4. Open the settings window from the menu bar icon, turn on "Rimappatura", and assign actions.
+5. Open the settings window from the menu bar icon, turn on "Rimappatura", and assign actions.
 
 The Stato section shows the current permission state, the detected device, and the last input seen. If a permission was granted after launch, macOS may require restarting the app.
 
@@ -43,6 +44,12 @@ bash Scripts/make_dev_certificate.sh   # creates "NagaController Dev" in the log
 ```
 
 `build_app.sh` picks it up automatically. Set `SIGNING_IDENTITY="Developer ID Application: ..."` to use a real identity instead. Builds are not notarized.
+
+To produce the distributable disk image (ad-hoc signed, with an Applications shortcut):
+
+```bash
+bash Scripts/make_dmg.sh              # writes NagaController-v<version>.dmg
+```
 
 ## Tests and diagnostics
 

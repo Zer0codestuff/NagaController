@@ -69,3 +69,4 @@ dmg-assets/temp.dmg
 .DS_Store
 .build/
 /NagaController.app
+/NagaController-v*.dmg

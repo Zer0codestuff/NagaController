@@ -21,7 +21,9 @@ macOS menu bar app (Swift, AppKit + SwiftUI, no Xcode project) that remaps the b
 swift build                      # debug
 bash Scripts/make_dev_certificate.sh   # once: self-signed "NagaController Dev" identity, keeps TCC grants across rebuilds
 bash Scripts/build_app.sh        # release bundle ./NagaController.app, signed with the dev identity if present, else ad-hoc
-bash Scripts/test.sh             # 158 dependency-free checks (XCTest is not available with CLI tools only)
+bash Scripts/test.sh             # 164 dependency-free checks (XCTest is not available with CLI tools only)
+bash Scripts/make_dmg.sh         # ad-hoc signed release DMG (NagaController-v<version>.dmg, git-ignored)
+gh release create vX.Y.Z NagaController-vX.Y.Z.dmg --title "NagaController X.Y.Z" --notes-file <file>   # publish
 open NagaController.app --args --diagnose-file /tmp/naga.json   # read-only hardware probe
 ./NagaController.app/Contents/MacOS/NagaController --snapshot /tmp/ui.png  # UI render without hardware
 ```
@@ -39,7 +41,7 @@ open NagaController.app --args --diagnose-file /tmp/naga.json   # read-only hard
 
 - Mouse actions `button4`/`button5`: when the frontmost app is a browser (`MouseAction.browserBundlePrefixes`) they are converted to `browserBack`/`browserForward`, because Safari and Chrome on macOS ignore mouse buttons 4/5. Real clicks are still sent elsewhere. `ButtonMapper.frontmostBundleIdentifier` is injectable for tests.
 - `KeyboardLayoutShortcut.browserStroke`: brackets are used only when reachable without Option; otherwise ⌘← / ⌘→ (the user's layout is "Italian - Pro", where `[` needs Option).
-- Version bumped to 2.0.0 (`CFBundleVersion` 3).
+- Version bumped to 2.0.0 (`CFBundleVersion` 3). GitHub release v2.0.0 published with `NagaController-v2.0.0.dmg` built by `Scripts/make_dmg.sh`. The stale tracked `NagaController-v0.1.0.dmg` was removed from git; root DMGs are now ignored.
 
 - Deleted emptied legacy UI files (`ActionEditorViewController`, `GlassyBatteryView`, `MouseMappingView`).
 - `PermissionManager`: added `ensureInputMonitoringPermission()` and `requestMissingPermissions()`; the app now requests both permissions at launch and before opening the corresponding System Settings pane, so it appears in the Privacy lists.
@@ -65,7 +67,7 @@ The user runs `/Applications/NagaController.app` (2.0.0, bundle id `com.zer0code
 - On-device verification of: side button remap, browser back/forward, button 4/5, wheel tilt, DPI and polling write-back, driver mode toggle and restore.
 - Two `onChange(of:perform:)` deprecation warnings remain because the deployment target is macOS 13.
 - `Resources/default-profiles.json` still ships English descriptions ("Copy", "Paste") in the Default profile.
-- `SETUP-INSTRUCTIONS.md` and `dmg-assets/` describe the upstream author's signing identity; not applicable to this fork.
+- `SETUP-INSTRUCTIONS.md` and `dmg-assets/` describe the upstream author's signing identity and create-dmg flow; not used by this fork (see `Scripts/make_dmg.sh`).
 
 ## Do not
 
