@@ -11,8 +11,13 @@ final class ButtonMapper {
     private var pressed: Set<Int> = []
     private var generation = 0
     private let eventSink: ((CGEvent) -> Void)?
+    private let workspaceActionSink: ((SystemAction) -> Void)?
+    var systemShortcutPreferences: () -> [String: Any] = MacSystemShortcut.preferences
 
-    init(eventSink: ((CGEvent) -> Void)? = nil) { self.eventSink = eventSink }
+    init(eventSink: ((CGEvent) -> Void)? = nil, workspaceActionSink: ((SystemAction) -> Void)? = nil) {
+        self.eventSink = eventSink
+        self.workspaceActionSink = workspaceActionSink
+    }
 
     func hasMapping(buttonIndex: Int) -> Bool { mapping[buttonIndex] != nil }
 
@@ -83,6 +88,8 @@ final class ButtonMapper {
 
     private func perform(action: ActionType) {
         switch action {
+        case .audio(let action, _): performAudio(action)
+        case .system(let action, _): performSystem(action)
         case .disabled: break
         case .mouse(let action, _): performMouse(action)
         case .keySequence(let keys, _): keys.forEach(sendKeyStroke)
@@ -92,6 +99,42 @@ final class ButtonMapper {
         case .macro(let steps, _): runMacro(steps)
         case .profileSwitch(let profile, _): DispatchQueue.main.async { ConfigManager.shared.setCurrentProfile(profile) }
         }
+    }
+
+    func performAudio(_ action: AudioAction) {
+        performSystem(SystemAction(audio: action))
+    }
+
+    @discardableResult
+    func performSystem(_ action: SystemAction) -> String? {
+        if action.mediaKey != nil {
+            for down in [true, false] { post(action.mediaEvent(down: down)) }
+        } else if let shortcut = action.shortcut {
+            guard let stroke = shortcut.resolve(in: systemShortcutPreferences()) else {
+                return action.shortcutSetupMessage
+            }
+            postKey(stroke.keyCode, flags: stroke.flags, down: true)
+            postKey(stroke.keyCode, flags: stroke.flags, down: false)
+            if action == .switchApplication {
+                // Command-Tab must release Command or the app switcher remains open.
+                let release = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_Command), keyDown: false)
+                release?.type = .flagsChanged
+                release?.flags = []
+                post(release)
+            }
+        } else if let workspaceActionSink {
+            workspaceActionSink(action)
+        } else {
+            DispatchQueue.main.async {
+                if let bundleID = action.applicationBundleIdentifier,
+                   let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                    NSWorkspace.shared.openApplication(at: url, configuration: .init())
+                } else if action == .hideApplication {
+                    NSWorkspace.shared.frontmostApplication?.hide()
+                }
+            }
+        }
+        return nil
     }
 
     private func post(_ event: CGEvent?) {
@@ -183,7 +226,7 @@ final class ButtonMapper {
         do {
             try task.run()
         } catch {
-            NSLog("[Mapping] Failed to run command: \(command) — error: \(error.localizedDescription)")
+            NSLog("[Mapping] Failed to run command: \(command), error: \(error.localizedDescription)")
         }
     }
 

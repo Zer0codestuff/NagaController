@@ -4,8 +4,8 @@ import SwiftUI
 private enum EditorKind: String, CaseIterable {
     case original = "Funzione originale"
     case mouse = "Azione mouse"
-    case shortcut = "Scorciatoia"
-    case text = "Testo"
+    case keys = "Tasti"
+    case system = "Sistema"
     case application = "Applicazione"
     case profile = "Cambia profilo"
     case shell = "Comando shell"
@@ -18,19 +18,33 @@ struct ActionInspector: View {
     @ObservedObject private var model = WorkspaceModel.shared
     @State private var kind: EditorKind = .original
     @State private var text = ""
+    @State private var legacyText: String?
     @State private var description = ""
     @State private var keys: [KeyStroke] = []
     @State private var selectedStroke = 0
     @State private var mouse: MouseAction = .browserBack
+    @State private var system: SystemAction = .volumeUp
+    @State private var systemShortcuts: [String: Any] = [:]
     @State private var recording = false
     @State private var validationError: String?
-    @State private var preset = "tab"
+
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(buttonName(button)).font(.title2.weight(.semibold))
-            Text("Le modifiche vengono salvate nel profilo \(model.profile).")
-                .font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                Text("\(button)").font(.system(size: 20, weight: .medium, design: .rounded))
+                    .foregroundStyle(UIStyle.accent).frame(width: 44, height: 44)
+                    .background(UIStyle.selection).clipShape(RoundedRectangle(cornerRadius: 10))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(buttonName(button)).font(.system(size: 17, weight: .semibold))
+                    Text("\(model.profile)").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack(spacing: 5) {
+                Image(systemName: "checkmark.circle")
+                Text(model.mapping[button]?.displayName ?? "Funzione originale")
+                    .lineLimit(2)
+            }.font(.callout).foregroundStyle(.secondary)
             if button >= 18 {
                 Label("Mantieni un clic principale disponibile per usare il Mac.", systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(.orange)
@@ -41,9 +55,11 @@ struct ActionInspector: View {
             Divider()
             editor
             if kind != .original && kind != .disabled {
-                TextField("Nome facoltativo", text: $description)
-                    .onSubmit { persist() }
-                Text("Premi Invio per salvare i campi di testo.").font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("Nome personalizzato") {
+                    TextField("Nome facoltativo", text: $description)
+                        .onSubmit { persist() }.padding(.top, 8)
+                    Text("Premi Invio per salvare il nome.").font(.caption).foregroundStyle(.secondary)
+                }.font(.callout)
             }
             if let validationError {
                 Text(validationError).font(.callout).foregroundStyle(.red)
@@ -57,13 +73,16 @@ struct ActionInspector: View {
             if !recording { load() }
         }
         .onDisappear { recording = false }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            systemShortcuts = MacSystemShortcut.preferences()
+        }
     }
 
     @ViewBuilder private var editor: some View {
         switch kind {
         case .original:
             Label("Nessuna rimappatura", systemImage: "arrow.uturn.backward")
-            Text("Il segnale originale passa senza modifiche. Non equivale a disabilitare il pulsante.")
+            Text("Il pulsante mantiene la sua funzione. Scegli Tasti per assegnare un tasto della tastiera.")
                 .foregroundStyle(.secondary)
         case .disabled:
             Label("Pulsante disabilitato", systemImage: "nosign")
@@ -80,12 +99,10 @@ struct ActionInspector: View {
             }
             Text("I pulsanti mouse 4 e 5 inviano clic reali. Nei browser, che su macOS li ignorano, vengono convertiti automaticamente in Indietro e Avanti.")
                 .font(.callout).foregroundStyle(.secondary)
-        case .shortcut:
+        case .system:
+            systemEditor
+        case .keys:
             shortcutEditor
-        case .text:
-            TextEditor(text: $text).font(.body).frame(minHeight: 140)
-                .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
-            Button("Applica testo") { persist() }
         case .application:
             TextField("Percorso dell'applicazione", text: $text).onSubmit { persist() }
             Button("Scegli applicazione…") {
@@ -112,71 +129,123 @@ struct ActionInspector: View {
         }
     }
 
+    private var systemEditor: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Picker("Categoria", selection: Binding(get: { system.group }, set: { group in
+                guard let action = group.actions.first else { return }
+                system = action
+                persist()
+            })) {
+                ForEach(SystemActionGroup.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Funzione").font(.caption).foregroundStyle(.secondary)
+                Picker("Funzione", selection: Binding(get: { system }, set: { system = $0; persist() })) {
+                    ForEach(system.group.actions, id: \.self) { action in
+                        Label(action.title, systemImage: action.symbol).tag(action)
+                    }
+                }.labelsHidden().frame(maxWidth: .infinity)
+            }
+            Text(system.help).font(.callout).foregroundStyle(.secondary)
+            if let shortcut = system.shortcut {
+                if let stroke = shortcut.resolve(in: systemShortcuts) {
+                    Text("Scorciatoia macOS: \(stroke.displayName)")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Label(system.shortcutSetupMessage, systemImage: "exclamationmark.triangle")
+                        .font(.callout).foregroundStyle(.orange)
+                    Button("Configura scorciatoia…") { MacSystemShortcut.openSettings() }
+                }
+            }
+            Button { validationError = ButtonMapper.shared.performSystem(system) } label: {
+                Label("Prova", systemImage: "play.fill")
+            }
+            .help("Esegui ora la funzione di sistema selezionata")
+            .disabled((system.needsAccessibility && !model.permissionsGranted) ||
+                      (system.shortcut != nil && system.shortcut?.resolve(in: systemShortcuts) == nil))
+        }
+    }
+
     private var shortcutEditor: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if keys.count > 1 {
-                Text("Sequenza di \(keys.count) tasti. Modifica un passaggio senza cancellare gli altri.")
+        VStack(alignment: .leading, spacing: 16) {
+            if legacyText != nil {
+                Text("Il testo precedente resta salvato finché non scegli un tasto.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            if keys.count > 1 {
                 Picker("Passaggio", selection: $selectedStroke) {
                     ForEach(keys.indices, id: \.self) { index in
                         Text("\(index + 1). \(keys[index].formattedShortcut())").tag(index)
                     }
                 }
             }
-            Text(keys.indices.contains(selectedStroke) ? keys[selectedStroke].formattedShortcut() : "Nessun tasto")
-                .font(.system(size: 26, weight: .medium)).frame(maxWidth: .infinity, minHeight: 58)
-                .background(Color(nsColor: .windowBackgroundColor))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-            ShortcutCapture(isRecording: $recording) { stroke in
-                if keys.indices.contains(selectedStroke) { keys[selectedStroke] = stroke }
-                else { keys.append(stroke); selectedStroke = keys.count - 1 }
-                persist()
-            }.frame(height: 32)
-            Text(recording ? "Premi un tasto, anche Tab, Invio o Esc. Per annullare usa il pulsante." : "La tastiera viene intercettata solo durante la registrazione.")
+            VStack(spacing: 6) {
+                Text(currentStroke?.formattedShortcut() ?? "Scegli un tasto")
+                    .font(.system(size: currentStroke == nil ? 17 : 28, weight: .medium))
+                    .foregroundStyle(currentStroke == nil ? Color.secondary : .primary)
+                if keys.count <= 1 {
+                    Text("Tenuto premuto finché premi il mouse")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
+            }.frame(maxWidth: .infinity).frame(height: 84)
+                .background(UIStyle.inset).clipShape(RoundedRectangle(cornerRadius: 10))
+            KeyboardKeySelector(selectedCode: currentStroke?.keyCode) { key in
+                replaceStroke(key.stroke(modifiers: currentStroke?.modifiers ?? []))
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Combina con").font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    ForEach(["ctrl", "alt", "shift", "cmd"], id: \.self) { modifier in
+                        Toggle(modifierSymbol(modifier), isOn: Binding(
+                            get: { currentStroke?.modifiers.contains(modifier) ?? false },
+                            set: { enabled in
+                                guard keys.indices.contains(selectedStroke) else { return }
+                                keys[selectedStroke].modifiers.removeAll { $0 == modifier }
+                                if enabled { keys[selectedStroke].modifiers.append(modifier) }
+                                persist()
+                            }
+                        )).toggleStyle(.button).frame(maxWidth: .infinity)
+                            .help(["ctrl": "Control", "alt": "Option", "shift": "Maiuscole", "cmd": "Command"][modifier] ?? modifier)
+                            .disabled(currentStroke == nil)
+                    }
+                }
+            }
+            Divider()
+            ShortcutCapture(isRecording: $recording) { replaceStroke($0) }.frame(height: 28)
+            Text(recording ? "Premi il tasto o la combinazione. Esc viene assegnato come tasto." : "Puoi anche premere il tasto sulla tastiera con Registra tasto.")
                 .font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 8) {
-                ForEach(["cmd", "shift", "alt", "ctrl"], id: \.self) { modifier in
-                    Toggle(modifierSymbol(modifier), isOn: Binding(
-                        get: { keys.indices.contains(selectedStroke) && keys[selectedStroke].modifiers.contains(modifier) },
-                        set: { enabled in
-                            guard keys.indices.contains(selectedStroke) else { return }
-                            keys[selectedStroke].modifiers.removeAll { $0 == modifier }
-                            if enabled { keys[selectedStroke].modifiers.append(modifier) }
+            DisclosureGroup("Sequenza di tasti") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Più passaggi vengono eseguiti in ordine alla pressione.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Button("Aggiungi passaggio") {
+                            keys.append(KeyStroke(key: "tab", modifiers: [], keyCode: 48))
+                            selectedStroke = keys.count - 1
                             persist()
                         }
-                    )).toggleStyle(.checkbox)
-                }
-            }
-            HStack {
-                Picker("Tasto", selection: $preset) {
-                    ForEach(["tab", "return", "escape", "space", "delete", "forward delete",
-                             "left arrow", "right arrow", "up arrow", "down arrow", "home", "end",
-                             "page up", "page down"] + (1...20).map { "f\($0)" }, id: \.self) {
-                        Text($0.capitalized).tag($0)
+                        if keys.count > 1 {
+                            Button("Rimuovi") {
+                                keys.remove(at: selectedStroke)
+                                selectedStroke = max(0, selectedStroke - 1)
+                                persist()
+                            }
+                        }
                     }
-                }
-                Button("Usa") {
-                    let stroke = KeyStroke(key: preset, modifiers: keys.indices.contains(selectedStroke) ? keys[selectedStroke].modifiers : [], keyCode: KeyStroke.keyCode(for: preset))
-                    if keys.indices.contains(selectedStroke) { keys[selectedStroke] = stroke }
-                    else { keys.append(stroke) }
-                    persist()
-                }
-            }
-            HStack {
-                Button("Aggiungi passaggio") {
-                    keys.append(KeyStroke(key: "tab", modifiers: [], keyCode: 48))
-                    selectedStroke = keys.count - 1
-                    persist()
-                }
-                if keys.count > 1 {
-                    Button("Rimuovi") {
-                        keys.remove(at: selectedStroke)
-                        selectedStroke = max(0, selectedStroke - 1)
-                        persist()
-                    }
-                }
-            }
+                }.padding(.top, 8)
+            }.font(.callout)
         }
+    }
+
+    private var currentStroke: KeyStroke? {
+        keys.indices.contains(selectedStroke) ? keys[selectedStroke] : nil
+    }
+
+    private func replaceStroke(_ stroke: KeyStroke) {
+        recording = false
+        if keys.indices.contains(selectedStroke) { keys[selectedStroke] = stroke }
+        else { keys.append(stroke); selectedStroke = keys.count - 1 }
+        persist()
     }
 
     private func changeKind(_ newKind: EditorKind) {
@@ -191,25 +260,30 @@ struct ActionInspector: View {
         }
         recording = false
         kind = newKind
+        legacyText = nil
         text = newKind == .macro ? "[]" : ""
         keys = []
         selectedStroke = 0
         description = ""
         validationError = nil
-        if [.original, .disabled, .mouse].contains(newKind) { persist() }
+        if [.original, .disabled, .mouse, .system].contains(newKind) { persist() }
     }
 
     private func load() {
+        legacyText = nil
         description = ""
         keys = []
+        systemShortcuts = MacSystemShortcut.preferences()
         switch model.mapping[button] {
         case nil: kind = .original
+        case .audio(let action, let label): kind = .system; system = SystemAction(audio: action); description = label ?? ""
+        case .system(let action, let label): kind = .system; system = action; description = label ?? ""
         case .disabled: kind = .disabled
         case .mouse(let action, let label): kind = .mouse; mouse = action; description = label ?? ""
         case .keySequence(let strokes, let label):
-            kind = .shortcut; keys = strokes; description = label ?? ""
+            kind = .keys; keys = strokes; description = label ?? ""
             selectedStroke = min(selectedStroke, max(0, keys.count - 1))
-        case .textSnippet(let value, let label): kind = .text; text = value; description = label ?? ""
+        case .textSnippet(let value, let label): kind = .keys; legacyText = value; description = label ?? ""
         case .application(let value, let label): kind = .application; text = value; description = label ?? ""
         case .profileSwitch(let value, let label): kind = .profile; text = value; description = label ?? ""
         case .systemCommand(let value, let label): kind = .shell; text = value; description = label ?? ""
@@ -227,12 +301,12 @@ struct ActionInspector: View {
         let action: ActionType?
         switch kind {
         case .original: action = nil
+        case .system: action = .system(action: system, description: label)
         case .disabled: action = .disabled
         case .mouse: action = .mouse(action: mouse, description: label)
-        case .shortcut:
+        case .keys:
             guard !keys.isEmpty else { return }
             action = .keySequence(keys: keys, description: label)
-        case .text: action = .textSnippet(text: text, description: label)
         case .application: action = .application(path: text, description: label)
         case .profile: action = .profileSwitch(profile: text, description: label)
         case .shell: action = .systemCommand(command: text, description: label)
@@ -281,7 +355,7 @@ private final class CaptureButton: NSButton {
     init() {
         super.init(frame: .zero)
         bezelStyle = .rounded
-        title = "Registra scorciatoia"
+        title = "Registra tasto"
         target = self
         action = #selector(toggleRecording)
         resignation = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [weak self] note in
@@ -295,7 +369,7 @@ private final class CaptureButton: NSButton {
     func setRecording(_ value: Bool) {
         guard value != recording else { return }
         recording = value
-        title = value ? "Annulla registrazione" : "Registra scorciatoia"
+        title = value ? "Annulla registrazione" : "Registra tasto"
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         guard value else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -306,7 +380,7 @@ private final class CaptureButton: NSButton {
             if flags.contains(.shift) { modifiers.append("shift") }
             if flags.contains(.option) { modifiers.append("alt") }
             if flags.contains(.control) { modifiers.append("ctrl") }
-            let stroke = KeyStroke(key: KeyStroke.canonicalKeyString(for: event.keyCode, characters: event.charactersIgnoringModifiers), modifiers: modifiers, keyCode: event.keyCode)
+            let stroke = KeyboardKeyCatalog.capturedStroke(code: event.keyCode, characters: event.charactersIgnoringModifiers, modifiers: modifiers)
             self.setRecording(false)
             self.onCapture?(stroke)
             return nil

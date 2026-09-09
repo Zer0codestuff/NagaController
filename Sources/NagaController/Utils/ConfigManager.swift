@@ -29,6 +29,8 @@ struct ButtonAction: Codable {
     let steps: [MacroStep]? // for macro
     let profile: String? // for profileSwitch
     var mouseAction: MouseAction? = nil
+    var audioAction: AudioAction? = nil
+    var systemAction: SystemAction? = nil
 }
 
 final class ConfigManager {
@@ -229,6 +231,10 @@ final class ConfigManager {
 
     private func convert(action: ButtonAction) -> ActionType? {
         switch action.type {
+        case "audio":
+            return action.audioAction.map { .audio(action: $0, description: action.description) }
+        case "system":
+            return action.systemAction.map { .system(action: $0, description: action.description) }
         case "disabled": return .disabled
         case "mouse":
             return action.mouseAction.map { .mouse(action: $0, description: action.description) }
@@ -255,6 +261,10 @@ final class ConfigManager {
 
     private func toButtonAction(_ action: ActionType) -> ButtonAction {
         switch action {
+        case .audio(let audio, let description):
+            return ButtonAction(type: "audio", keys: nil, description: description, path: nil, command: nil, text: nil, steps: nil, profile: nil, audioAction: audio)
+        case .system(let system, let description):
+            return ButtonAction(type: "system", keys: nil, description: description, path: nil, command: nil, text: nil, steps: nil, profile: nil, systemAction: system)
         case .disabled:
             return ButtonAction(type: "disabled", keys: nil, description: nil, path: nil, command: nil, text: nil, steps: nil, profile: nil)
         case .mouse(let mouse, let description):

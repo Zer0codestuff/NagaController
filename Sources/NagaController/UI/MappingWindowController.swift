@@ -13,10 +13,14 @@ final class MappingWindowController: NSWindowController, NSWindowDelegate {
         if #available(macOS 11.0, *) {
             window.toolbarStyle = .unified
         }
-        window.isMovableByWindowBackground = true
-        window.setContentSize(NSSize(width: 1100, height: 740))
-        window.contentMinSize = NSSize(width: 960, height: 650)
+        window.isMovableByWindowBackground = false
+        window.setContentSize(NSSize(width: 1180, height: 820))
+        window.contentMinSize = NSSize(width: 980, height: 700)
         window.isReleasedWhenClosed = false
+        if !CommandLine.arguments.contains("--snapshot") {
+            window.setFrameAutosaveName("NagaWorkspace")
+            if !window.setFrameUsingName("NagaWorkspace") { window.center() }
+        } else { window.center() }
 
         super.init(window: window)
     }
@@ -34,7 +38,6 @@ final class MappingWindowController: NSWindowController, NSWindowDelegate {
         }
 
         window.delegate = self
-        window.center()
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

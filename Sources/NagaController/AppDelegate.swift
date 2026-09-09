@@ -7,7 +7,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var observers: [NSObjectProtocol] = []
     private var permissionTimer: Timer?
     private var hadInputPermission = false
+    private var hadAccessibilityPermission = false
     private var isTerminating = false
+    private var remappingActivity: NSObjectProtocol?
+    private var hardwareRefreshTimer: Timer?
+    private var observedDeviceName: String?
+    private var observedTransport: String?
 
     private var snapshotPath: String? {
         let args = CommandLine.arguments
@@ -16,14 +21,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if snapshotPath != nil, let appearance = argument(after: "--snapshot-appearance") {
+            NSApp.appearance = NSAppearance(named: appearance == "dark" ? .darkAqua : .aqua)
+        }
         ConfigManager.shared.load()
         installApplicationMenu()
 
         if snapshotPath == nil {
+            observers.append(NotificationCenter.default.addObserver(forName: HIDListener.didUpdateNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.checkHardwareConnection() }
+            })
             PermissionManager.shared.requestMissingPermissions()
             HIDListener.shared.start()
             RazerDeviceController.shared.refresh()
             hadInputPermission = PermissionManager.shared.hasInputMonitoringPermission()
+            hadAccessibilityPermission = PermissionManager.shared.hasAccessibilityPermission()
             startRemappingIfPermitted()
             permissionTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
                 Task { @MainActor in self?.checkPermissions() }
@@ -51,6 +63,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MappingWindowController.shared.show()
 
         if let path = snapshotPath {
+            if let value = argument(after: "--snapshot-size") {
+                let parts = value.split(separator: "x").compactMap { Double($0) }
+                if parts.count == 2, parts[0] >= 980, parts[1] >= 700 {
+                    MappingWindowController.shared.window?.setContentSize(NSSize(width: parts[0], height: parts[1]))
+                }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 self.captureWindow(to: path)
             }
@@ -62,8 +80,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
     func applicationWillTerminate(_ notification: Notification) {
         permissionTimer?.invalidate()
+        hardwareRefreshTimer?.invalidate()
+        if let remappingActivity { ProcessInfo.processInfo.endActivity(remappingActivity) }
+        remappingActivity = nil
         EventTapManager.shared.stop()
         HIDListener.shared.stop()
         observers.forEach(NotificationCenter.default.removeObserver)
@@ -73,6 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard snapshotPath == nil else { return .terminateNow }
         guard !isTerminating else { return .terminateLater }
         isTerminating = true
+        hardwareRefreshTimer?.invalidate()
         EventTapManager.shared.stop()
         DispatchQueue.main.async {
             RazerDeviceController.shared.restoreOriginalMode {
@@ -88,6 +112,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         EventTapManager.shared.start(listenOnly: !ConfigManager.shared.getRemappingEnabled())
     }
 
+    private func checkHardwareConnection() {
+        let listener = HIDListener.shared
+        guard observedDeviceName != listener.connectedDeviceName || observedTransport != listener.transport else { return }
+        observedDeviceName = listener.connectedDeviceName
+        observedTransport = listener.transport
+        scheduleHardwareRefresh()
+    }
+
+    private func scheduleHardwareRefresh() {
+        hardwareRefreshTimer?.invalidate()
+        guard !isTerminating else { return }
+        // Coalesce the receiver's HID collections and wait for any active hardware operation.
+        hardwareRefreshTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.isTerminating else { return }
+                if RazerDeviceController.shared.isBusy {
+                    self.scheduleHardwareRefresh()
+                } else {
+                    RazerDeviceController.shared.refresh()
+                }
+            }
+        }
+    }
+
     private func checkPermissions() {
         let permission = PermissionManager.shared
         let input = permission.hasInputMonitoringPermission()
@@ -96,7 +144,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             HIDListener.shared.start()
             RazerDeviceController.shared.refresh()
         }
+        let accessibility = permission.hasAccessibilityPermission()
+        if hadInputPermission != input || hadAccessibilityPermission != accessibility {
+            NotificationCenter.default.post(name: PermissionManager.didUpdateNotification, object: nil)
+        }
         hadInputPermission = input
+        hadAccessibilityPermission = accessibility
         if !permission.hasAccessibilityPermission() || !input {
             if EventTapManager.shared.isRunning { EventTapManager.shared.stop() }
         } else if !EventTapManager.shared.isRunning {
@@ -109,6 +162,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hardware = RazerDeviceController.shared
         statusItem?.button?.title = hardware.batteryLevel.map { " \($0)%" } ?? ""
         let active = EventTapManager.shared.isRunning && EventTapManager.shared.isRemappingEnabled
+        // Keep remapping responsive under App Nap while allowing normal system sleep.
+        if active && remappingActivity == nil {
+            remappingActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Mouse button remapping")
+        } else if !active, let activity = remappingActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            remappingActivity = nil
+        }
         statusItem?.button?.toolTip = active ? "NagaController · Rimappatura attiva" : "NagaController · Rimappatura in pausa"
     }
 
@@ -134,6 +194,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = NSMenuItem(title: "Impostazioni…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
+        let close = NSMenuItem(title: "Chiudi finestra", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        appMenu.addItem(close)
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Esci da NagaController", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
@@ -151,6 +213,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = menu
     }
 
+    private func argument(after option: String) -> String? {
+        let args = CommandLine.arguments
+        guard let index = args.firstIndex(of: option), args.indices.contains(index + 1) else { return nil }
+        return args[index + 1]
+    }
+
     private func captureWindow(to path: String) {
         guard let view = MappingWindowController.shared.window?.contentView,
               let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
@@ -161,7 +229,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         view.layoutSubtreeIfNeeded()
         view.cacheDisplay(in: view.bounds, to: bitmap)
         do {
-            guard let png = bitmap.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
+            // cacheDisplay excludes the native window backing. Composite it explicitly.
+            let size = view.bounds.size
+            let rendered = NSImage(size: size)
+            rendered.lockFocus()
+            NSColor.windowBackgroundColor.setFill()
+            NSRect(origin: .zero, size: size).fill()
+            bitmap.draw(in: NSRect(origin: .zero, size: size))
+            rendered.unlockFocus()
+            guard let tiff = rendered.tiffRepresentation,
+                  let flattened = NSBitmapImageRep(data: tiff),
+                  let png = flattened.representation(using: .png, properties: [:]) else { throw CocoaError(.fileWriteUnknown) }
             try png.write(to: URL(fileURLWithPath: path), options: .atomic)
             print("UI snapshot: \(path)")
         } catch {

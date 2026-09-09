@@ -3,6 +3,8 @@ import Carbon.HIToolbox
 
 enum ActionType: Equatable {
     case mouse(action: MouseAction, description: String?)
+    case audio(action: AudioAction, description: String?)
+    case system(action: SystemAction, description: String?)
     case disabled
     case keySequence(keys: [KeyStroke], description: String?)
     case application(path: String, description: String?)
@@ -58,6 +60,8 @@ enum MouseAction: String, Codable, CaseIterable {
 extension ActionType {
     var displayName: String {
         switch self {
+        case .audio(let action, let description): return description ?? action.title
+        case .system(let action, let description): return description ?? action.title
         case .disabled: return "Disabilitato"
         case .mouse(let action, let description): return description ?? action.title
         case .keySequence(let keys, let description): return description ?? keys.map { $0.formattedShortcut() }.joined(separator: ", ")
@@ -267,23 +271,23 @@ extension KeyStroke {
     }()
 
     private static let specialKeyNames: [UInt16: String] = [
-        UInt16(kVK_Return): "Return",
+        UInt16(kVK_Return): "Invio",
         UInt16(kVK_ANSI_KeypadEnter): "Enter",
-        UInt16(kVK_Space): "Space",
-        UInt16(kVK_Delete): "Delete",
-        UInt16(kVK_ForwardDelete): "Forward Delete",
-        UInt16(kVK_Escape): "Escape",
+        UInt16(kVK_Space): "Spazio",
+        UInt16(kVK_Delete): "⌫",
+        UInt16(kVK_ForwardDelete): "⌦",
+        UInt16(kVK_Escape): "Esc",
         UInt16(kVK_Tab): "Tab",
         UInt16(kVK_CapsLock): "Caps Lock",
         UInt16(kVK_Help): "Help",
         UInt16(kVK_Home): "Home",
         UInt16(kVK_End): "End",
-        UInt16(kVK_PageUp): "Page Up",
-        UInt16(kVK_PageDown): "Page Down",
-        UInt16(kVK_LeftArrow): "Left Arrow",
-        UInt16(kVK_RightArrow): "Right Arrow",
-        UInt16(kVK_UpArrow): "Up Arrow",
-        UInt16(kVK_DownArrow): "Down Arrow",
+        UInt16(kVK_PageUp): "Pag ↑",
+        UInt16(kVK_PageDown): "Pag ↓",
+        UInt16(kVK_LeftArrow): "←",
+        UInt16(kVK_RightArrow): "→",
+        UInt16(kVK_UpArrow): "↑",
+        UInt16(kVK_DownArrow): "↓",
         UInt16(kVK_F1): "F1",
         UInt16(kVK_F2): "F2",
         UInt16(kVK_F3): "F3",

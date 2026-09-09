@@ -157,7 +157,68 @@ enum InputEngineTests {
         try Data(#"{"profiles":{"Legacy":{"buttons":{"1":{"type":"keySequence","keys":[{"key":"c","modifiers":["cmd"]}]}}}},"settings":{"currentProfile":"Legacy"}}"#.utf8).write(to: legacyURL)
         try config.importProfiles(from: legacyURL, merge: false)
         try check(config.mappingForCurrentProfile()[1] == .keySequence(keys: [KeyStroke(key: "c", modifiers: ["cmd"])], description: nil), "Legacy JSON accepted")
-        let blocked = root.appendingPathComponent("file")
+        // The visual selector must send and persist physical keys, including the active layout's symbols.
+        let catalog = KeyboardKeyCatalog.current()
+        try check(Set(catalog.map(\.code)).count == catalog.count, "Key picker has unique physical codes")
+        try check(KeyboardKeyGroup.allCases.allSatisfy { group in catalog.contains { $0.group == group } }, "Every key group is populated")
+        var selectedKeyEvents: [CGEvent] = []
+        let selectedKeyMapper = ButtonMapper(eventSink: { selectedKeyEvents.append($0) })
+        for entry in catalog {
+            selectedKeyEvents.removeAll()
+            let stroke = entry.stroke(modifiers: ["cmd", "shift"])
+            selectedKeyMapper.updateMapping([1: .keySequence(keys: [stroke], description: nil)])
+            selectedKeyMapper.handlePress(buttonIndex: 1)
+            try check(selectedKeyEvents.count == 1 && selectedKeyEvents[0].type == .keyDown &&
+                      selectedKeyEvents[0].getIntegerValueField(.keyboardEventKeycode) == Int64(entry.code) &&
+                      selectedKeyEvents[0].flags.contains([.maskCommand, .maskShift]), "Picker key press: \(entry.key)")
+            selectedKeyMapper.handleRelease(buttonIndex: 1)
+            try check(selectedKeyEvents.count == 2 && selectedKeyEvents[1].type == .keyUp, "Picker key release: \(entry.key)")
+        }
+        for (audio, expectedCode) in [(AudioAction.volumeUp, 0), (.volumeDown, 1), (.mute, 7)] {
+            selectedKeyEvents.removeAll()
+            let action = ActionType.audio(action: audio, description: "Audio test")
+            selectedKeyMapper.updateMapping([1: action])
+            selectedKeyMapper.handlePress(buttonIndex: 1)
+            selectedKeyMapper.handlePress(buttonIndex: 1)
+            try check(selectedKeyEvents.count == 2, "Audio sends one pair and ignores duplicate press")
+            for (offset, state) in [0xA, 0xB].enumerated() {
+                let event = NSEvent(cgEvent: selectedKeyEvents[offset])!
+                try check(event.type == .systemDefined && event.subtype.rawValue == 8, "Audio uses system media event")
+                try check(event.data1 == (expectedCode << 16) | (state << 8), "Audio key and edge encoding")
+                try check(selectedKeyEvents[offset].getIntegerValueField(.eventSourceUserData) == ButtonMapper.syntheticMarker, "Audio carries synthetic marker")
+            }
+            selectedKeyMapper.handleRelease(buttonIndex: 1)
+            try check(selectedKeyEvents.count == 2, "Audio release does not repeat the action")
+            selectedKeyMapper.handlePress(buttonIndex: 1)
+            try check(selectedKeyEvents.count == 4, "Audio works on subsequent press")
+            config.setAction(forButton: 2, action: action)
+            restored.load()
+            try check(restored.mappingForCurrentProfile()[2] == action, "Audio action survives profile reload")
+        }
+        let symbol = catalog.first { $0.group == .symbols }!
+        let selectedAction = ActionType.keySequence(keys: [symbol.stroke(modifiers: ["alt"])], description: "Symbol")
+        config.setAction(forButton: 2, action: selectedAction)
+        restored.load()
+        try check(restored.mappingForCurrentProfile()[2] == selectedAction, "Selected layout key survives profile reload")
+        let sequence = ActionType.keySequence(keys: [catalog[0].stroke(), catalog[1].stroke(modifiers: ["ctrl"])], description: nil)
+        config.setAction(forButton: 2, action: sequence)
+        restored.load()
+        try check(restored.mappingForCurrentProfile()[2] == sequence, "Multiple key steps survive reload")
+        config.setAction(forButton: 3, action: .textSnippet(text: "Legacy text", description: nil))
+        restored.load()
+        try check(restored.mappingForCurrentProfile()[3] == .textSnippet(text: "Legacy text", description: nil), "Existing text mapping is not silently migrated")
+        try check(Set(MouseHotspot.side.map(\.id)) == Set(1...12), "All side buttons have a photo target")
+        try check(MouseHotspot.side.allSatisfy { $0.points.count == 4 && $0.points.allSatisfy { (0...1).contains($0.x) && (0...1).contains($0.y) } }, "Photo targets stay within the image")
+        for height: CGFloat in [220, 440] {
+            let size = CGSize(width: height * 2 / 3, height: height)
+            for target in MouseHotspot.side {
+                let center = CGPoint(x: target.points.map(\.x).reduce(0, +) / 4 * size.width,
+                                     y: target.points.map(\.y).reduce(0, +) / 4 * size.height)
+                try check(MouseHotspot.sideButton(at: center, imageSize: size) == target.id, "Hover identifies button \(target.id) at height \(height)")
+            }
+            try check(MouseHotspot.sideButton(at: CGPoint(x: size.width / 2, y: size.height / 2), imageSize: size) == nil, "Mouse body does not highlight a side button")
+        }
+                let blocked = root.appendingPathComponent("file")
         try Data().write(to: blocked)
         let failing = ConfigManager(storageURL: blocked.appendingPathComponent("profiles.json"), defaults: defaults)
         failing.saveUserProfiles()

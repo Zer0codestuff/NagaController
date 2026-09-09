@@ -4,23 +4,26 @@ A macOS menu bar app for the Razer Naga V2 HyperSpeed. It remaps the 12 side but
 
 ## Features
 
-- Native settings window (SwiftUI) with three sections: Pulsanti, Sensibilità, Stato
-- Physical 3x4 grid for side buttons 1 to 12, plus the two top DPI buttons, wheel tilt left/right, middle, left and right click (logical indices 13 to 19)
-- Actions per button: keyboard shortcut (recorded or chosen from a preset list, with modifiers), multi-step key sequence, mouse action (browser back/forward, real mouse buttons 4/5, middle/left/right click, scroll), text snippet, launch application, shell command, macro, profile switch, disabled, or original passthrough
+- Adaptive macOS settings window with a restrained green accent and three sections: Pulsanti, Sensibilità, Stato
+- Interactive mouse photographs with side-button highlights, a top view and a matching assignment grid for all 19 logical controls
+- Actions per button: keyboard keys selected by category or recorded, with optional modifiers, multi-step key sequence, mouse action (browser back/forward, real mouse buttons 4/5, middle/left/right click, scroll), launch application, shell command, macro, profile switch, disabled, or original passthrough
+- Sistema editor with 25 actions for audio, playback, brightness, screenshots, windows, spaces and macOS tools, with a preview button
+- Existing text snippets remain saved and can be replaced through the Tasti editor
 - Profiles with auto-save, import/export as JSON, rename/duplicate/delete
 - DPI (100 to 30000 per axis) and polling rate (125/500/1000 Hz) read and written through the Razer USB protocol, with read-back verification
 - Optional "driver mode" for the top DPI buttons, with journaled restore of the original mode at quit
-- Menu bar popover with remapping toggle and battery level when available
+- Menu bar popover with profile selection and remapping toggle; closing the settings window keeps the service running
+- Remapping activity prevents App Nap while allowing normal system sleep
 
 ## Requirements
 
-- macOS 13.0 or later
-- Razer Naga V2 HyperSpeed connected through its HyperSpeed USB receiver (`1532:00b4`) for DPI, polling rate and driver mode. Remapping also works over Bluetooth; hardware settings do not.
+- macOS 13.0 or later. The downloadable DMG contains an Apple Silicon build; Intel Macs must build from source.
+- Razer Naga V2 HyperSpeed connected through its HyperSpeed USB receiver (`1532:00b4`) for DPI, polling rate and driver mode. The HID input path accepts Naga Bluetooth devices, but Bluetooth remapping needs on-device verification. Hardware controls require the receiver.
 - Xcode Command Line Tools with Swift 5.9+ to build from source
 
 ## Install and first run
 
-1. Download `NagaController-v2.0.0.dmg` from the [latest release](https://github.com/Zer0codestuff/NagaController/releases/latest), or build the app bundle (see below).
+1. Download `NagaController-v2.1.0.dmg` from the [latest release](https://github.com/Zer0codestuff/NagaController/releases/latest), or build the app bundle (see below).
 2. Open the DMG and drag `NagaController.app` to Applications. Permissions are tied to the app location, so do not move it afterwards.
 3. The release is not notarized. On first launch right-click the app and choose Open, or run `xattr -dr com.apple.quarantine /Applications/NagaController.app`.
 4. Launch it. macOS prompts for two permissions; both are required:
@@ -30,10 +33,29 @@ A macOS menu bar app for the Razer Naga V2 HyperSpeed. It remaps the 12 side but
 
 The Stato section shows the current permission state, the detected device, and the last input seen. If a permission was granted after launch, macOS may require restarting the app.
 
+## Assign system controls
+
+Select a mouse button, choose **Sistema** in the **Azione** menu, then pick a category and function. The selection saves immediately. **Prova** executes the selected function without pressing the mouse button.
+
+| Category | Functions |
+| --- | --- |
+| Audio | Volume up, volume down, mute toggle |
+| Riproduzione | Play/pause, previous track, next track |
+| Luminosità | Display brightness up/down |
+| Screenshot | Full screen or selection to a file or clipboard, screenshot and recording tools |
+| Finestre e spazi | Mission Control, app windows, desktop, previous/next space, hide app, switch to the last app |
+| Strumenti | Spotlight, Finder, System Settings, Notification Center, Do Not Disturb |
+
+Each physical press runs the action once, with no hold repeat. Existing audio mappings appear under Sistema without being rewritten. Shell commands remain a separate action type.
+
+Screenshots, Mission Control and space navigation use the keyboard shortcuts configured in macOS. Disabled or unassigned shortcuts show setup instructions instead of sending a different key combination. Do Not Disturb requires an enabled shortcut in System Settings > Keyboard > Keyboard Shortcuts > Mission Control. NagaController does not change these preferences. Spotlight opens directly even when its keyboard shortcut is disabled.
+
+Brightness uses the Mac's brightness keys, so an external monitor must support brightness control through macOS. Media controls target the active playback app. Focus settings may sync Do Not Disturb to other Apple devices.
+
 ## Build from source
 
 ```bash
-bash Scripts/build_app.sh        # release build, ad-hoc signed, writes ./NagaController.app
+bash Scripts/build_app.sh        # release bundle, signed with the dev identity if available
 open NagaController.app
 ```
 
@@ -66,7 +88,13 @@ cat /tmp/naga.json
 
 Add `--verify-hardware` to also write back the current DPI and polling values and confirm the read-back. Values are not changed.
 
-Add `--snapshot /tmp/ui.png` to render the settings window to a PNG without touching the hardware.
+Capture the UI without starting the input or hardware services:
+
+```bash
+open -n NagaController.app --args --snapshot /tmp/ui.png --snapshot-appearance dark --snapshot-size 980x700 --snapshot-button 8
+```
+
+Appearance, size and selected button are optional snapshot controls. See [the verification record](Documentation/verification-2026-09-08.md) for tested flows and remaining device checks.
 
 ## How input handling works
 
@@ -85,8 +113,9 @@ Add `--snapshot /tmp/ui.png` to render the settings window to a PNG without touc
 - `Sources/NagaController/UI/` SwiftUI settings window and menu bar popover
 - `Sources/NagaController/Utils/` profiles storage, permissions, battery monitor
 - `Tests/` dependency-free test sources run by `Scripts/test.sh`
-- `Resources/` Info.plist and bundled default profiles
+- `Resources/` Info.plist, bundled default profiles and transparent mouse images
+- `Resources/Mouse/README.md` image sources, generation prompts and transparency verification
 
 ## Credits and license
 
-Protocol facts come from the published OpenRazer sources and pull request 2850; no GPL code is included. Licensed under MIT, see [LICENSE](LICENSE).
+Protocol facts come from the published OpenRazer sources and pull request 2850; no GPL code is included. Code is licensed under MIT, see [LICENSE](LICENSE). Mouse image provenance is documented in [Resources/Mouse/README.md](Resources/Mouse/README.md).

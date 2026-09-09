@@ -29,7 +29,7 @@ struct SensitivityPane: View {
                         .disabled(device.isBusy)
                 }
                 if !device.isConnected {
-                    Label("Controllo hardware non disponibile. Collega il mouse tramite USB o ricevitore compatibile.",
+                    Label("Controllo hardware non disponibile. Collega il ricevitore USB del Naga V2 HyperSpeed.",
                           systemImage: "cable.connector").foregroundStyle(.secondary)
                 }
                 GroupBox {
@@ -122,7 +122,7 @@ struct StatusPane: View {
                     Spacer()
                     Button("Ricontrolla") { model.refresh() }
                 }
-                Text("Dopo aver concesso i permessi, riattiva la rimappatura. macOS potrebbe richiedere di riaprire l'app.")
+                Text("I permessi vengono ricontrollati automaticamente. Se macOS lo richiede, riapri l'app.")
                     .foregroundStyle(.secondary)
                 GroupBox {
                     VStack(spacing: 20) {
@@ -144,6 +144,17 @@ struct StatusPane: View {
                         statusRow("Intercettazione input", EventTapManager.shared.isRunning ? "In esecuzione" : "Non disponibile")
                         statusRow("Rimappatura", model.remappingActive ? "Attiva" : "Non attiva")
                         statusRow("Ultimo input", HIDListener.shared.lastInputDescription)
+                    }.padding(12)
+                }
+                GroupBox {
+                    HStack(alignment: .top, spacing: 14) {
+                        Image(systemName: "menubar.rectangle").font(.title2).foregroundStyle(UIStyle.accent)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Attiva anche in background").font(.headline)
+                            Text("Chiudi la finestra per lasciare NagaController nella barra dei menu. Le assegnazioni continuano a funzionare nelle altre app. Per interrompere il servizio, disattiva Rimappatura oppure scegli Esci.")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        Spacer()
                     }.padding(12)
                 }
                 Text(RazerDeviceController.shared.statusMessage).font(.callout).foregroundStyle(.secondary)

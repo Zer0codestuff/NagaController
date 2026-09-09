@@ -3,6 +3,7 @@ import ApplicationServices
 
 final class PermissionManager {
     static let shared = PermissionManager()
+    static let didUpdateNotification = Notification.Name("NagaPermissionsDidUpdate")
     private init() {}
 
     func ensureAccessibilityPermission() {
