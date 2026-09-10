@@ -1,5 +1,6 @@
 import Foundation
 import Cocoa
+import IOKit.hid
 
 enum InputEngineTests {
     struct Failure: Error, CustomStringConvertible {
@@ -16,6 +17,32 @@ enum InputEngineTests {
         try check(!NagaInput.isSupported(vendor: 0x1532, product: 1, name: "Razer Keyboard"), "Other Razer keyboard excluded")
         try check(!NagaInput.isSupported(vendor: 0x068e, product: 1, name: "Keyboard"), "Unrelated vendor excluded")
         try check(!NagaInput.isSupported(vendor: 1, product: 0x00b4, name: "Naga"), "Product/name alone insufficient")
+        let identities: [(Int, Int, String?, Bool)] = [
+            (0x068e, 0x00b5, "Naga V2 HS", true),
+            (0x068e, 0x00b5, nil, true),
+            (0x068e, 0x0001, "Naga V2 HS", false),
+            (0x068e, 0x00b4, "Razer Naga V2 HyperSpeed", false),
+            (0x0001, 0x00b5, "Naga V2 HS", false),
+            (0x1532, 0x00b5, "Razer Naga V2 HyperSpeed", true),
+            (0x1532, 0x0001, "RAZER NAGA", true),
+            (0x1532, 0x0001, nil, false)
+        ]
+        func enumerates(vendor: Int, product: Int) -> Bool {
+            HIDListener.deviceMatchingCriteria.contains {
+                $0[kIOHIDVendorIDKey] == vendor &&
+                ($0[kIOHIDProductIDKey] == nil || $0[kIOHIDProductIDKey] == product)
+            }
+        }
+        for (vendor, product, name, supported) in identities {
+            try check(NagaInput.isSupported(vendor: vendor, product: product, name: name) == supported,
+                      "Naga identity gate: \(vendor):\(product), \(name ?? "no name")")
+            if supported {
+                try check(enumerates(vendor: vendor, product: product), "Supported identity reaches HID callbacks")
+            }
+        }
+        try check(enumerates(vendor: 0x1532, product: 0x00b4), "USB receiver still enumerated")
+        try check(!enumerates(vendor: 0x068e, product: 1), "Bluetooth enumeration excludes unrelated products")
+        try check(!enumerates(vendor: 1, product: 0x00b5), "Bluetooth product ID alone is insufficient")
         for index in 1...10 {
             try check(NagaInput.button(page: 7, usage: UInt32(0x1d + index), value: 1) == index, "Side keyboard usage")
         }

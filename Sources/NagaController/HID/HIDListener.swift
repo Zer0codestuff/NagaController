@@ -5,6 +5,11 @@ import Darwin
 final class HIDListener {
     static let shared = HIDListener()
     static let didUpdateNotification = Notification.Name("NagaHIDDidUpdate")
+    static let deviceMatchingCriteria: [[String: Int]] = [
+        [kIOHIDVendorIDKey: 0x1532],
+        [kIOHIDVendorIDKey: NagaInput.bluetoothIdentity.vendor,
+         kIOHIDProductIDKey: NagaInput.bluetoothIdentity.product]
+    ]
     private(set) var connectedDeviceName: String?
     private(set) var transport: String?
     private(set) var lastInputDescription = "Nessun input rilevato. I tasti DPI richiedono un report driver riconosciuto."
@@ -32,8 +37,8 @@ final class HIDListener {
             lock.lock(); runLoop = loop; lock.unlock()
             let manager = IOHIDManagerCreate(kCFAllocatorDefault, 0)
             self.manager = manager
-            // Razer only at enumeration; every callback additionally requires Naga identity.
-            IOHIDManagerSetDeviceMatching(manager, [kIOHIDVendorIDKey: 0x1532] as CFDictionary)
+            // BLE uses a different vendor ID. Do not enumerate that entire vendor.
+            IOHIDManagerSetDeviceMatchingMultiple(manager, Self.deviceMatchingCriteria as CFArray)
             let context = Unmanaged.passUnretained(self).toOpaque()
             IOHIDManagerRegisterDeviceMatchingCallback(manager, { context, _, _, device in
                 guard let context else { return }
@@ -111,6 +116,7 @@ final class HIDListener {
         let name = IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String ?? "Razer Naga"
         let transport = IOHIDDeviceGetProperty(device, kIOHIDTransportKey as CFString) as? String
         devices[identity(device)] = (name, transport)
+        NSLog("[HID] Naga connected via %@", transport ?? "unknown transport")
         publish { self.connectedDeviceName = name; self.transport = transport }
     }
 

@@ -18,12 +18,12 @@ A macOS menu bar app for the Razer Naga V2 HyperSpeed. It remaps the 12 side but
 ## Requirements
 
 - macOS 13.0 or later. The downloadable DMG contains an Apple Silicon build; Intel Macs must build from source.
-- Razer Naga V2 HyperSpeed connected through its HyperSpeed USB receiver (`1532:00b4`) for DPI, polling rate and driver mode. The HID input path accepts Naga Bluetooth devices, but Bluetooth remapping needs on-device verification. Hardware controls require the receiver.
+- Razer Naga V2 HyperSpeed connected through its HyperSpeed USB receiver (`1532:00b4`) for DPI, polling rate and driver mode. Source builds also recognize the Bluetooth identity `068e:00b5`, shown by macOS as "Naga V2 HS". Bluetooth detection is verified; physical button remapping still needs on-device verification.
 - Xcode Command Line Tools with Swift 5.9+ to build from source
 
 ## Install and first run
 
-1. Download `NagaController-v2.1.0.dmg` from the [latest release](https://github.com/Zer0codestuff/NagaController/releases/latest), or build the app bundle (see below).
+1. Download `NagaController-v2.1.1.dmg` from the [latest release](https://github.com/Zer0codestuff/NagaController/releases/latest), or build the app bundle (see below).
 2. Open the DMG and drag `NagaController.app` to Applications. Permissions are tied to the app location, so do not move it afterwards.
 3. The release is not notarized. On first launch right-click the app and choose Open, or run `xattr -dr com.apple.quarantine /Applications/NagaController.app`.
 4. Launch it. macOS prompts for two permissions; both are required:
@@ -32,6 +32,8 @@ A macOS menu bar app for the Razer Naga V2 HyperSpeed. It remaps the 12 side but
 5. Open the settings window from the menu bar icon, turn on "Rimappatura", and assign actions.
 
 The Stato section shows the current permission state, the detected device, and the last input seen. If a permission was granted after launch, macOS may require restarting the app.
+
+Button assignments are saved on the Mac, not to the mouse's onboard memory. The same selected profile is used for USB receiver and Bluetooth connections. NagaController must keep running in the menu bar to apply it; closing the settings window is fine, quitting the app stops remapping.
 
 ## Assign system controls
 
@@ -98,7 +100,7 @@ Appearance, size and selected button are optional snapshot controls. See [the ve
 
 ## How input handling works
 
-- `HIDListener` observes only Razer devices whose product ID is `0x00b4` or whose name contains "naga", on a background run loop.
+- `HIDListener` observes vendor `1532` devices whose product ID is `00b4` or whose name contains "naga", plus the exact Bluetooth identity `068e:00b5`, on a background run loop. It does not enumerate other products under the Bluetooth vendor ID.
 - Each physical press/release is recorded with its timestamp. `EventTapManager` consumes a matching system event only if it arrives within 25 ms of a recorded HID edge, so regular keyboards are never blocked.
 - Synthetic events are tagged through `eventSourceUserData` and ignored by the tap.
 - Held buttons are released on stop, disconnect, profile change, or when the tap is disabled by the system.

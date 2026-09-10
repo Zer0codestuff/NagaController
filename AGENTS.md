@@ -10,7 +10,7 @@ macOS menu bar app (Swift, AppKit + SwiftUI, no Xcode project) that remaps the b
 - `AppDelegate`: starts `HIDListener`, `RazerDeviceController.refresh()`, the event tap (only when Accessibility and Input Monitoring are granted), a 2 s permission poll, menu bar item and popover; defers quit until `restoreOriginalMode` completes.
 - `ButtonMapping/`: `ActionType` (system, legacy audio, mouse, disabled, keySequence, application, systemCommand, textSnippet, macro, profileSwitch), `ButtonMapper` (press/hold/release semantics, synthetic marker `eventSourceUserData`), `KeyboardLayoutShortcut` (browser back/forward per layout). `SystemAction` groups native system controls; `MacSystemShortcut` reads configured macOS shortcuts without changing preferences.
 - `EventTap/EventTapManager`: CGEvent tap; consumes an event only if `HIDListener.consume` matches a HID edge within 25 ms. Logical indices: 1..12 side grid, 13 DPI up, 14 DPI down, 15 wheel left, 16 wheel right, 17 middle, 18 left, 19 right.
-- `HID/HIDListener` + `HID/InputModel`: IOHIDManager on a dedicated thread, pure decoders (`NagaInput`, `InputEdgeMatcher`, `DriverButtonState`).
+- `HID/HIDListener` + `HID/InputModel`: IOHIDManager on a dedicated thread, pure decoders (`NagaInput`, `InputEdgeMatcher`, `DriverButtonState`). Enumeration includes vendor `1532` and exact BLE identity `068e:00b5`; callbacks additionally validate Naga identity.
 - `Hardware/`: `RazerProtocol` (90-byte report codec, CRC, transaction IDs), `MacRazerUSBTransport` (IOHID feature reports on the mouse collection with 90-byte feature size), `RazerDeviceController` (`@MainActor` facade, serial worker queue, driver-mode recovery journal in `~/Library/Application Support/NagaController/driver-mode-recovery.json`).
 - `UI/`: `MappingViewController` (NSHostingController with `NagaWorkspace`), `ActionInspector`, `SettingsPanes` (Sensitivity, Status, ProfileManager), `MainViewController` (popover), `MappingWindowController`.
 - `Utils/ConfigManager`: profiles JSON, auto-save, `didChangeNotification`, `lastError`.
@@ -21,7 +21,7 @@ macOS menu bar app (Swift, AppKit + SwiftUI, no Xcode project) that remaps the b
 swift build                      # debug
 bash Scripts/make_dev_certificate.sh   # once: self-signed "NagaController Dev" identity, keeps TCC grants across rebuilds
 bash Scripts/build_app.sh        # release bundle ./NagaController.app, signed with the dev identity if present, else ad-hoc
-bash Scripts/test.sh             # 730 dependency-free checks (XCTest is not available with CLI tools only)
+bash Scripts/test.sh             # 745 dependency-free checks (XCTest is not available with CLI tools only)
 bash Scripts/make_dmg.sh         # ad-hoc signed release DMG (NagaController-v<version>.dmg, git-ignored)
 gh release create vX.Y.Z NagaController-vX.Y.Z.dmg --title "NagaController X.Y.Z" --notes-file <file>   # publish
 open NagaController.app --args --diagnose-file /tmp/naga.json   # read-only hardware probe
@@ -30,15 +30,19 @@ open NagaController.app --args --diagnose-file /tmp/naga.json   # read-only hard
 
 `Package.swift` also declares a `TapTester` executable and an XCTest target (`Tests/NagaControllerTests`) that cannot run without Xcode.
 
-## Current status (2026-09-09)
+## Current status (2026-09-10)
 
-- Version 2.1.0, build 4, includes the Sistema editor alongside the native UI, keyboard picker and background/hotplug fixes. Published as GitHub release v2.1.0 with `NagaController-v2.1.0.dmg` (Apple Silicon, ad-hoc signed, not notarized). Installed in `/Applications/NagaController.app` with the existing development signing identity. Debug/release builds and 730 dependency-free checks pass.
+- Version 2.1.1, build 5, is published as GitHub release v2.1.1 with `NagaController-v2.1.1.dmg` (Apple Silicon, ad-hoc signed, not notarized). It adds Bluetooth detection on top of 2.1.0 (Sistema, native UI, keyboard picker, background/hotplug fixes).
+- The Bluetooth fix is installed in `/Applications/NagaController.app` with the existing development signing identity. Release build and 745 dependency-free checks pass. Startup logs confirm `Naga connected via Bluetooth Low Energy` and an active blocking event tap. The profile JSON stayed byte-identical across installation and relaunch; physical Bluetooth button actions and switching transports still need user testing.
 - Sistema checked in isolated light/dark snapshots at 980 x 700, plus the missing-shortcut state at 1180 x 780. Live UI automation was blocked by the terminal's Accessibility permission. The installed executable matches the release build, and the user profile JSON remained byte-identical after snapshots and relaunch.
 - Earlier UI checks covered native light/dark appearance, background process survival and the active event tap. On September 9, USB receiver read and same-value write/readback passed: 1600 DPI on both axes, 500 Hz, battery 100%, normal mode 0, no warnings. Physical remapping and driver-mode restore still require user testing.
 - `--diagnose` run from a terminal fails with `0xe00002e2` (kIOReturnNotPermitted): the launching process needs Input Monitoring. Use `open -n NagaController.app --args --diagnose-file <path>` instead.
 - Worktrees `../naga-worktree-{input,ui,hardware}` on branches `work/*` hold the sub-agent originals; they are fully merged and can be removed with `git worktree remove`.
 
 ## Recent changes
+
+- Fixed Bluetooth enumeration and callback filtering for the observed `Naga V2 HS` identity `068e:00b5`. Previously both gates required vendor `1532`, so macOS saw the mouse but NagaController excluded it. `IOHIDManagerSetDeviceMatchingMultiple` now includes the exact BLE pair without opening unrelated products under vendor `068e`. The live BLE descriptor includes a standard keyboard collection, report ID 6. Existing input decoding, profile storage and USB hardware controls are unchanged.
+- Added 15 identity/enumeration regression checks, covering BLE with the short or missing name, unrelated devices, existing Razer name matching and USB receiver detection. The pre-fix installed app and scoped runtime log are in `.build/bluetooth-install.uqz61mjj/`.
 
 - Sistema replaces the Audio editor with 25 functions in six categories: audio, playback, brightness, screenshots, windows/spaces, and tools. Tools include Spotlight, Finder, System Settings, Notification Center and Do Not Disturb. Selection saves immediately; Prova runs the selected function. Shell commands remain separate.
 - System actions run once per physical press. Media events use tagged down/up pairs; keyboard actions honor configured macOS shortcuts, and app switching explicitly releases Command. Disabled/unassigned shortcuts show setup guidance. Spotlight opens directly because its keyboard shortcut may be disabled.
@@ -76,11 +80,12 @@ The user runs `/Applications/NagaController.app` (2.1.0, bundle id `com.zer0code
 - No em dashes anywhere.
 - MIT only: protocol knowledge from OpenRazer docs / PR 2850, no GPL code copied; OpenMouse is unlicensed, do not copy.
 - Never change hardware settings on init or refresh; driver mode only through the explicit toggle, always journaled and restored.
+- Button profiles are stored on the Mac and require the app to run. Do not describe them as written to the mouse's onboard memory.
 - Do not claim signing or notarization that does not exist.
 
 ## Known issues / next steps
 
-- Pending on-device verification: side button remap and release timing, browser back/forward, button 4/5, wheel tilt, driver mode toggle and restore, USB unplug/replug. Bluetooth has not been tested.
+- Pending on-device verification: side button remap and release timing, browser back/forward, button 4/5, wheel tilt, driver mode toggle and restore, USB unplug/replug. Bluetooth connection detection and event-tap startup are verified; physical Bluetooth remapping and Bluetooth/dongle transitions are not.
 - New system actions still need live testing with the mouse. Do Not Disturb has no assigned shortcut on this Mac; the inspector links to keyboard settings for setup. Brightness depends on display support for macOS brightness keys, and media keys depend on the playback app.
 - `onChange(of:perform:)` deprecation warnings remain because the deployment target is macOS 13.
 - `Resources/default-profiles.json` still ships English descriptions ("Copy", "Paste") in the Default profile.

@@ -1,8 +1,12 @@
 import Foundation
 
 enum NagaInput {
+    // Observed on macOS as "Naga V2 HS" over Bluetooth Low Energy.
+    static let bluetoothIdentity = (vendor: 0x068e, product: 0x00b5)
+
     static func isSupported(vendor: Int, product: Int, name: String?) -> Bool {
-        vendor == 0x1532 && (product == 0x00b4 || (name?.localizedCaseInsensitiveContains("naga") == true))
+        if vendor == bluetoothIdentity.vendor && product == bluetoothIdentity.product { return true }
+        return vendor == 0x1532 && (product == 0x00b4 || (name?.localizedCaseInsensitiveContains("naga") == true))
     }
 
     static func button(page: UInt32, usage: UInt32, value: Int) -> Int? {
